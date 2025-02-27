@@ -1,5 +1,4 @@
 from textual.widgets import Static
-from textual.widgets.text_log import TextLog
 from textual.containers import Horizontal
 from rich.panel import Panel
 

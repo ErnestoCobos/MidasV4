@@ -9,7 +9,7 @@ from .components.charts import MultiChart
 class TradingBotApp(App):
     """Aplicación TUI para el Midas Scalping Bot."""
     
-    CSS_PATH = "tui/app.tcss"
+    CSS_PATH = "app.tcss"
     
     BINDINGS = [
         ("d", "switch_view('dashboard')", "Dashboard"),
