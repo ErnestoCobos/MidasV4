@@ -35,6 +35,8 @@ class PricesPanel(DataTable):
         # Configurar columnas
         self.add_columns("Par", "Precio", "Cambio")
         self.cursor_type = "row"  # permitir seleccionar filas
+        # DataTable debe devolver un iterable vacío
+        return []
         
     def on_mount(self):
         # Inicializar con datos iniciales
@@ -93,6 +95,8 @@ class OpenTradesPanel(DataTable):
         # Configurar columnas
         self.add_columns("Par", "Entrada", "SL", "TP", "P/L")
         self.cursor_type = "row"
+        # DataTable debe devolver un iterable vacío
+        return []
     
     def on_mount(self):
         """Inicializar con datos iniciales"""
@@ -186,6 +190,8 @@ class HistoryPanel(DataTable):
         # Configurar columnas
         self.add_columns("Par", "Entrada", "Salida", "P/L", "Fecha")
         self.cursor_type = "row"
+        # DataTable debe devolver un iterable vacío
+        return []
     
     def on_mount(self):
         # Inicializar con datos existentes

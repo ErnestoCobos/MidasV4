@@ -62,29 +62,54 @@ class TradingBotApp(App):
         
     def refresh_data(self):
         """Actualizar datos periódicamente."""
-        # Actualizar panel de estado
-        self.query_one("#status_panel", StatusPanel).update_status()
-        
-        # Actualizar todos los paneles de precios
-        for panel in self.query(PricesPanel):
-            panel.refresh_prices()
-        
-        # Actualizar operaciones abiertas
-        for panel in self.query(OpenTradesPanel):
-            panel.refresh_trades()
-        
-        # Actualizar historial de operaciones
-        for panel in self.query(HistoryPanel):
-            panel.refresh_history()
-        
-        # Actualizar gráficos
-        for chart_container in self.query(MultiChart):
-            chart_container.update_charts()
-        
-        # Actualizar estadísticas si esa vista está activa
-        if self.query_one(ContentSwitcher).current == "stats":
-            for panel in self.query(StatsPanel):
-                panel.update_stats()
+        try:
+            # Actualizar panel de estado
+            status_panel = self.query_one("#status_panel", StatusPanel)
+            if status_panel:
+                status_panel.update_status()
+            
+            # Actualizar todos los paneles de precios
+            for panel in self.query(PricesPanel):
+                try:
+                    panel.refresh_prices()
+                except Exception:
+                    pass
+            
+            # Actualizar operaciones abiertas
+            for panel in self.query(OpenTradesPanel):
+                try:
+                    panel.refresh_trades()
+                except Exception:
+                    pass
+            
+            # Actualizar historial de operaciones
+            for panel in self.query(HistoryPanel):
+                try:
+                    panel.refresh_history()
+                except Exception:
+                    pass
+            
+            # Actualizar gráficos
+            for chart_container in self.query(MultiChart):
+                try:
+                    chart_container.update_charts()
+                except Exception:
+                    pass
+            
+            # Actualizar estadísticas si esa vista está activa
+            try:
+                content_switcher = self.query_one(ContentSwitcher)
+                if content_switcher and content_switcher.current == "stats":
+                    for panel in self.query(StatsPanel):
+                        try:
+                            panel.update_stats()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        except Exception:
+            # Ignorar cualquier error durante la actualización
+            pass
     
     def action_switch_view(self, view_name: str):
         """Cambiar la vista actual."""
