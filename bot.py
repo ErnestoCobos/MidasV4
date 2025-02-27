@@ -76,6 +76,10 @@ class ScalpingBot:
         except Exception as e:
             logger.error(f"Error initializing database: {str(e)}")
             self.db = None
+            
+        # Add demo trades if in simulation mode (for TUI demo)
+        if hasattr(self.config, 'simulation_mode') and self.config.simulation_mode:
+            self._add_demo_trades()
         
         # Initialize model if enabled
         self.model = None
@@ -219,25 +223,140 @@ class ScalpingBot:
         except Exception as e:
             logger.error(f"Error while stopping bot: {str(e)}")
             
+    def _add_demo_trades(self):
+        """Add demo trades for TUI visualization (simulation mode only)"""
+        try:
+            # Add some open trades for demonstration
+            self.open_trades = {
+                "BTC1": {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "quantity": 0.01,
+                    "entry_price": 68500.0,
+                    "stop_loss": 67800.0,
+                    "take_profit": 69800.0,
+                    "time_opened": datetime.now() - timedelta(hours=2),
+                    "order_id": "12345",
+                    "strategy_type": "indicator",
+                    "profit_loss": 120.50
+                },
+                "ETH1": {
+                    "symbol": "ETHUSDT",
+                    "side": "SELL",
+                    "quantity": 0.5,
+                    "entry_price": 3850.0,
+                    "stop_loss": 3900.0,
+                    "take_profit": 3700.0,
+                    "time_opened": datetime.now() - timedelta(hours=1),
+                    "order_id": "12346",
+                    "strategy_type": "indicator",
+                    "profit_loss": -25.75
+                }
+            }
+            
+            # Add some trade history for demonstration
+            self.trades_history = [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "quantity": 0.02,
+                    "entry_price": 65000.0,
+                    "exit_price": 65500.0,
+                    "stop_loss": 64500.0,
+                    "take_profit": 66000.0,
+                    "time_opened": datetime.now() - timedelta(days=1, hours=4),
+                    "time_closed": datetime.now() - timedelta(days=1, hours=2),
+                    "order_id": "12340",
+                    "strategy_type": "indicator",
+                    "profit_loss": 10.0,
+                    "reason": "take_profit"
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "side": "SELL",
+                    "quantity": 1.0,
+                    "entry_price": 3900.0,
+                    "exit_price": 3800.0,
+                    "stop_loss": 4000.0,
+                    "take_profit": 3750.0,
+                    "time_opened": datetime.now() - timedelta(days=1, hours=6),
+                    "time_closed": datetime.now() - timedelta(days=1, hours=4),
+                    "order_id": "12341",
+                    "strategy_type": "llm",
+                    "profit_loss": 100.0,
+                    "reason": "take_profit"
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "SELL",
+                    "quantity": 0.015,
+                    "entry_price": 67000.0,
+                    "exit_price": 66500.0,
+                    "stop_loss": 67500.0,
+                    "take_profit": 66000.0,
+                    "time_opened": datetime.now() - timedelta(days=2, hours=2),
+                    "time_closed": datetime.now() - timedelta(days=2),
+                    "order_id": "12342",
+                    "strategy_type": "indicator",
+                    "profit_loss": 7.5,
+                    "reason": "take_profit"
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "side": "BUY",
+                    "quantity": 0.75,
+                    "entry_price": 3700.0,
+                    "exit_price": 3650.0,
+                    "stop_loss": 3650.0,
+                    "take_profit": 3800.0,
+                    "time_opened": datetime.now() - timedelta(days=2, hours=6),
+                    "time_closed": datetime.now() - timedelta(days=2, hours=4),
+                    "order_id": "12343",
+                    "strategy_type": "indicator",
+                    "profit_loss": -37.5,
+                    "reason": "stop_loss"
+                }
+            ]
+            
+            logger.info("Added demo trades for simulation")
+        except Exception as e:
+            logger.error(f"Error adding demo trades: {str(e)}")
+    
     def get_performance_summary(self):
         """Obtener resumen de rendimiento para la TUI"""
         # En un caso real, calcularíamos estadísticas basadas en el historial real
-        # Para la TUI, generamos datos de ejemplo
         total_trades = len(self.trades_history)
         profitable_trades = sum(1 for t in self.trades_history if t.get('profit_loss', 0) > 0)
         
         # Evitar división por cero
         win_rate = 0 if total_trades == 0 else profitable_trades / total_trades
         
+        # Calcular P/L total
+        total_pl = sum(t.get('profit_loss', 0) for t in self.trades_history)
+        
+        # Calcular promedio de ganancias y pérdidas
+        profit_trades = [t.get('profit_loss', 0) for t in self.trades_history if t.get('profit_loss', 0) > 0]
+        loss_trades = [t.get('profit_loss', 0) for t in self.trades_history if t.get('profit_loss', 0) < 0]
+        
+        avg_win = sum(profit_trades) / len(profit_trades) if profit_trades else 0
+        avg_loss = sum(loss_trades) / len(loss_trades) if loss_trades else 0
+        
+        # Primera operación (la más antigua) para "active_since"
+        active_since = "N/A"
+        if self.trades_history:
+            oldest_trade = min(self.trades_history, key=lambda x: x.get('time_opened', datetime.now()))
+            if 'time_opened' in oldest_trade:
+                active_since = oldest_trade['time_opened'].strftime("%Y-%m-%d %H:%M:%S")
+        
         return {
             'total_trades': total_trades,
             'profitable_trades': profitable_trades,
             'win_rate': win_rate,
-            'total_profit_loss': sum(t.get('profit_loss', 0) for t in self.trades_history),
-            'avg_win': 0.25,
-            'avg_loss': -0.15,
+            'total_profit_loss': total_pl,
+            'avg_win': avg_win,
+            'avg_loss': avg_loss,
             'open_trades': len(self.open_trades),
-            'active_since': "2025-02-27 00:00:00"
+            'active_since': active_since
         }
     
     def _start_price_monitoring(self, symbol: str):
