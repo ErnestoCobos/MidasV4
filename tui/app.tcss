@@ -1,0 +1,135 @@
+/* Estilos generales */
+Screen {
+    background: #161b22;
+    color: #c9d1d9;
+}
+
+/* Estilo para el panel de estado siempre visible */
+#status_panel {
+    dock: top;
+    height: 3;
+    padding: 0 1;
+    background: #0d1117;
+    color: #58a6ff;
+    border-bottom: heavy #30363d;
+    content-align-vertical: middle;
+    text-style: bold;
+}
+
+/* Contenedor principal */
+#main_container {
+    height: 1fr;
+    overflow: auto;
+}
+
+#main_view {
+    height: 1fr;
+    overflow: auto;
+}
+
+/* Estilos para títulos de sección */
+.table-title {
+    background: #21262d;
+    color: #f0f6fc;
+    text-align: center;
+    padding: 0 1;
+    text-style: bold;
+    height: 1;
+    width: 100%;
+}
+
+/* Estilos para las tablas de datos */
+DataTable {
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+DataTable > .datatable--header {
+    background: #21262d;
+    color: #f0f6fc;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #2a3649;
+}
+
+/* Estilos específicos para indicadores positivos/negativos */
+.positive {
+    color: #3fb950;
+}
+
+.negative {
+    color: #f85149;
+}
+
+/* Estilos para los paneles */
+PricesPanel, OpenTradesPanel, HistoryPanel {
+    max-height: 50vh;
+    min-height: 10;
+    width: 100%;
+}
+
+StatsPanel {
+    margin: 1 0;
+    padding: 1;
+    background: #0d1117;
+    border: round #30363d;
+    height: auto;
+    width: 100%;
+}
+
+/* Configuración de layout para vista principal */
+DashboardView {
+    layout: vertical;
+    height: 1fr;
+    width: 100%;
+    overflow: auto;
+}
+
+PricesView {
+    layout: vertical;
+    height: 1fr;
+    width: 100%;
+    overflow: auto;
+}
+
+TradesView, StatsView, ConfigView {
+    height: 1fr;
+    width: 100%;
+    overflow: auto;
+}
+
+/* Estilos para los gráficos */
+AsciiChart {
+    background: #0d1117;
+    height: auto;
+    min-width: 30;
+    width: 1fr;
+    border: round #30363d;
+    margin: 0 1 1 0;
+}
+
+MultiChart {
+    layout: horizontal;
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+/* Estilos para layout horizontal */
+Horizontal {
+    height: auto;
+    width: 100%;
+}
+
+/* Notificaciones */
+Notification {
+    background: #2ea043;
+    color: #ffffff;
+}
+
+Notification.error {
+    background: #f85149;
+}

@@ -41,6 +41,10 @@ class ScalpingBot:
         """Initialize the bot with configuration"""
         self.config = config
         self.binance_client = BinanceClient(config)
+        self.active = False
+        self.real_time_prices = {}
+        self.open_trades = {}
+        self.trades_history = []
         
         # Initialize database
         try:
