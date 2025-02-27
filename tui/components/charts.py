@@ -97,14 +97,24 @@ class MultiChart(Horizontal):
         self.symbols = symbols or []
         self.charts = {}
         
-    def on_mount(self):
+    def compose(self):
         # Crear un gráfico para cada símbolo
         for symbol in self.symbols:
             chart = AsciiChart(symbol, id=f"chart_{symbol}")
-            self.mount(chart)
+            yield chart
             self.charts[symbol] = chart
     
     def update_charts(self):
         """Actualizar todos los gráficos"""
+        # Si no hay charts en self.charts, buscarlos por id
+        if not self.charts and self.symbols:
+            for symbol in self.symbols:
+                chart_id = f"#chart_{symbol}"
+                try:
+                    self.charts[symbol] = self.query_one(chart_id, AsciiChart)
+                except:
+                    pass
+        
+        # Actualizar cada gráfico
         for symbol, chart in self.charts.items():
             chart.update_chart()

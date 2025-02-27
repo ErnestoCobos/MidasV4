@@ -6,88 +6,80 @@ from .charts import AsciiChart, MultiChart
 
 # Vista Dashboard
 class DashboardView(Vertical):
-    def on_mount(self):
+    def compose(self):
         # Sección de gráficos arriba
         symbols = []
         if hasattr(self.app.bot, 'config') and hasattr(self.app.bot.config, 'symbols'):
             symbols = self.app.bot.config.symbols[:2]  # Limitar a los primeros 2 símbolos
         
-        charts = MultiChart(symbols=symbols)
-        self.mount(charts)
+        yield MultiChart(symbols=symbols)
         
         # Contenedor para las tablas
-        tables = Horizontal()
-        
-        # Panel izquierdo con precios
-        prices_container = Vertical()
-        prices_container.mount(Label("Precios en tiempo real", classes="table-title"))
-        prices_container.mount(PricesPanel(id="dashboard_prices"))
-        tables.mount(prices_container)
-        
-        # Panel derecho con operaciones abiertas
-        trades_container = Vertical()
-        trades_container.mount(Label("Operaciones abiertas", classes="table-title"))
-        trades_container.mount(OpenTradesPanel(id="dashboard_trades"))
-        tables.mount(trades_container)
-        
-        self.mount(tables)
+        with Horizontal() as tables:
+            # Panel izquierdo con precios
+            with Vertical():
+                yield Label("Precios en tiempo real", classes="table-title")
+                yield PricesPanel(id="dashboard_prices")
+            
+            # Panel derecho con operaciones abiertas
+            with Vertical():
+                yield Label("Operaciones abiertas", classes="table-title")
+                yield OpenTradesPanel(id="dashboard_trades")
 
 # Vista de Precios y Gráficos
 class PricesView(Vertical):
-    def on_mount(self):
+    def compose(self):
         # Sección de gráficos
         symbols = []
         if hasattr(self.app.bot, 'config') and hasattr(self.app.bot.config, 'symbols'):
             symbols = self.app.bot.config.symbols[:4]  # Limitar a 4 gráficos
         
-        self.mount(Label("Gráficos de Precios", classes="table-title"))
+        yield Label("Gráficos de Precios", classes="table-title")
         
         # Varios gráficos en una fila
-        charts = MultiChart(symbols=symbols)
-        self.mount(charts)
+        yield MultiChart(symbols=symbols)
         
         # Tabla completa de precios
-        self.mount(Label("Todos los Precios", classes="table-title"))
-        prices_table = PricesPanel(id="full_prices")
-        self.mount(prices_table)
+        yield Label("Todos los Precios", classes="table-title")
+        yield PricesPanel(id="full_prices")
 
 # Vista de Operaciones (abiertas y cerradas)
 class TradesView(VerticalScroll):
-    def on_mount(self):
+    def compose(self):
         # Operaciones abiertas
-        self.mount(Label("Operaciones Abiertas", classes="table-title"))
-        open_trades_table = OpenTradesPanel(id="full_open_trades")
-        self.mount(open_trades_table)
+        yield Label("Operaciones Abiertas", classes="table-title")
+        yield OpenTradesPanel(id="full_open_trades")
         
         # Historial de operaciones cerradas
-        self.mount(Label("Historial de Operaciones", classes="table-title"))
-        history_table = HistoryPanel(id="full_history")
-        self.mount(history_table)
+        yield Label("Historial de Operaciones", classes="table-title")
+        yield HistoryPanel(id="full_history")
 
 # Vista de Estadísticas
 class StatsView(VerticalScroll):
-    def on_mount(self):
+    def compose(self):
         # Panel de estadísticas
-        self.mount(Label("Estadísticas de Rendimiento", classes="table-title"))
-        stats_panel = StatsPanel(id="performance_stats")
-        self.mount(stats_panel)
+        yield Label("Estadísticas de Rendimiento", classes="table-title")
+        yield StatsPanel(id="performance_stats")
         
         # Incluir también historial para referencia
-        self.mount(Label("Historial de Operaciones", classes="table-title"))
-        history_table = HistoryPanel(id="stats_history")
-        self.mount(history_table)
-        
-        # Actualizar stats al montar
+        yield Label("Historial de Operaciones", classes="table-title")
+        yield HistoryPanel(id="stats_history")
+    
+    def on_mount(self):
+        # Actualizar stats al montar la vista
+        stats_panel = self.query_one(StatsPanel)
         stats_panel.update_stats()
 
 # Vista de Configuración
 class ConfigView(VerticalScroll):
-    def on_mount(self):
+    def compose(self):
         # Primero mostrar información del bot
-        self.mount(Label("Configuración del Bot", classes="table-title"))
-        
-        config_info = Static("Cargando configuración...")
-        self.mount(config_info)
+        yield Label("Configuración del Bot", classes="table-title")
+        yield Static("Cargando configuración...", id="config_info")
+    
+    def on_mount(self):
+        # Obtener referencia al Static donde mostraremos la configuración
+        config_info = self.query_one("#config_info")
         
         # Actualizar la información de configuración
         bot = self.app.bot
