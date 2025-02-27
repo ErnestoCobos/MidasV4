@@ -31,48 +31,82 @@ class StatusPanel(Static):
 
 # Panel de precios en vivo
 class PricesPanel(DataTable):
-    def on_mount(self):
+    def compose(self):
         # Configurar columnas
         self.add_columns("Par", "Precio", "Cambio")
-        # Llenar filas iniciales a partir de los precios actuales
-        if hasattr(self.app.bot, 'real_time_prices'):
-            for pair, price in self.app.bot.real_time_prices.items():
-                # Agregar fila con key del par para poder actualizarla fácilmente
-                self.add_row(pair, f"{price:.8f}", "0.00%", key=pair)
         self.cursor_type = "row"  # permitir seleccionar filas
         
+    def on_mount(self):
+        # Inicializar con datos iniciales
+        self._initialize_rows()
+    
+    def _initialize_rows(self):
+        """Inicializar filas con datos disponibles"""
+        if hasattr(self.app.bot, 'real_time_prices'):
+            for pair, price in self.app.bot.real_time_prices.items():
+                # Agregar fila con key del par
+                try:
+                    self.add_row(pair, f"{price:.8f}", "0.00%", key=pair)
+                except Exception as e:
+                    # Ignorar errores al agregar filas iniciales
+                    pass
+        
     def refresh_prices(self):
-        # Actualizar precios en cada fila si el bot tiene real_time_prices
+        """Actualizar precios en tiempo real"""
+        # Verificar que bot tenga datos de precios
         if not hasattr(self.app.bot, 'real_time_prices'):
             return
-            
+        
+        # Procesar cada par de trading
         for pair, price in self.app.bot.real_time_prices.items():
-            # Verificar si la fila existe
-            if not self.get_row(pair):
-                self.add_row(pair, f"{price:.8f}", "0.00%", key=pair)
-            else:
-                # Calcular cambio si tenemos precio anterior
-                current_price = price
-                old_price = self.app.bot.get_previous_price(pair) if hasattr(self.app.bot, 'get_previous_price') else current_price
+            try:
+                # Intentar encontrar la fila existente
+                row_keys = list(self.rows.keys())
+                row_exists = pair in row_keys
                 
-                if old_price and old_price > 0:
-                    change_pct = ((current_price - old_price) / old_price) * 100
-                    change_str = f"{change_pct:+.2f}%" 
-                    change_style = "green" if change_pct >= 0 else "red"
-                    self.update_cell_at(pair, 1, f"{current_price:.8f}")
-                    self.update_cell_at(pair, 2, change_str, style=change_style)
+                # Crear fila si no existe
+                if not row_exists:
+                    self.add_row(pair, f"{price:.8f}", "0.00%", key=pair)
                 else:
-                    self.update_cell_at(pair, 1, f"{current_price:.8f}")
+                    # Actualizar fila existente
+                    # Calcular cambio si tenemos precio anterior
+                    current_price = price
+                    old_price = self.app.bot.get_previous_price(pair) if hasattr(self.app.bot, 'get_previous_price') else current_price
+                    
+                    if old_price and old_price > 0:
+                        change_pct = ((current_price - old_price) / old_price) * 100
+                        change_str = f"{change_pct:+.2f}%" 
+                        change_style = "green" if change_pct >= 0 else "red"
+                        
+                        # Actualizar las celdas
+                        self.update_cell(pair, "Precio", f"{current_price:.8f}")
+                        self.update_cell(pair, "Cambio", change_str, style=change_style)
+                    else:
+                        self.update_cell(pair, "Precio", f"{current_price:.8f}")
+            except Exception as e:
+                # Ignorar errores durante la actualización
+                continue
 
 # Panel de operaciones abiertas
 class OpenTradesPanel(DataTable):
-    def on_mount(self):
+    def compose(self):
+        # Configurar columnas
         self.add_columns("Par", "Entrada", "SL", "TP", "P/L")
-        # Poblar filas iniciales
+        self.cursor_type = "row"
+    
+    def on_mount(self):
+        """Inicializar con datos iniciales"""
+        self._initialize_rows()
+    
+    def _initialize_rows(self):
+        """Añadir filas iniciales si hay operaciones abiertas"""
         if hasattr(self.app.bot, 'open_trades'):
             for trade_id, trade in self.app.bot.open_trades.items():
-                self._add_trade_row(trade_id, trade)
-        self.cursor_type = "row"
+                try:
+                    self._add_trade_row(trade_id, trade)
+                except Exception as e:
+                    # Ignorar errores al agregar filas iniciales
+                    pass
         
     def _add_trade_row(self, trade_id, trade):
         # Extraer datos del trade con manejo seguro
@@ -97,44 +131,77 @@ class OpenTradesPanel(DataTable):
         )
     
     def refresh_trades(self):
+        """Actualizar operaciones abiertas"""
         # Verificar si bot tiene open_trades
         if not hasattr(self.app.bot, 'open_trades'):
             return
             
-        # Sincronizar con bot.open_trades (agregar nuevas, quitar cerradas, actualizar P/L)
-        bot_trades = self.app.bot.open_trades
-        
-        # Actualizar o agregar
-        for trade_id, trade in bot_trades.items():
-            if not self.get_row(str(trade_id)):  # si no existe fila, agregar nueva
-                self._add_trade_row(trade_id, trade)
-            else:
-                # Si ya existe, actualizar P/L y otros campos que puedan cambiar
-                pl = trade.get("profit_loss", 0.0)
-                pl_style = "green" if pl >= 0 else "red"
-                self.update_cell_at(str(trade_id), 4, f"{pl:.8f}", style=pl_style)
+        try:
+            # Sincronizar con bot.open_trades (agregar nuevas, quitar cerradas, actualizar P/L)
+            bot_trades = self.app.bot.open_trades
+            
+            # Obtener claves actuales
+            row_keys = list(self.rows.keys())
+            
+            # Actualizar o agregar
+            for trade_id, trade in bot_trades.items():
+                trade_id_str = str(trade_id)
                 
-                # También actualizamos SL/TP por si fueron modificados
-                sl = trade.get("stop_loss", 0.0) 
-                tp = trade.get("take_profit", 0.0)
-                self.update_cell_at(str(trade_id), 2, f"{sl:.8f}")
-                self.update_cell_at(str(trade_id), 3, f"{tp:.8f}")
-        
-        # Eliminar filas de trades que ya no están abiertos (cerrados)
-        for row_key in list(self.rows.keys()):
-            if row_key not in map(str, bot_trades.keys()):
-                self.remove_row(row_key)
+                if trade_id_str not in row_keys:  # si no existe fila, agregar nueva
+                    try:
+                        self._add_trade_row(trade_id, trade)
+                    except Exception:
+                        pass
+                else:
+                    # Si ya existe, actualizar P/L y otros campos que puedan cambiar
+                    try:
+                        pl = trade.get("profit_loss", 0.0)
+                        pl_style = "green" if pl >= 0 else "red"
+                        
+                        # Actualizar campos con nombres de columna
+                        self.update_cell(trade_id_str, "P/L", f"{pl:.8f}", style=pl_style)
+                        
+                        # También actualizamos SL/TP por si fueron modificados
+                        sl = trade.get("stop_loss", 0.0) 
+                        tp = trade.get("take_profit", 0.0)
+                        self.update_cell(trade_id_str, "SL", f"{sl:.8f}")
+                        self.update_cell(trade_id_str, "TP", f"{tp:.8f}")
+                    except Exception:
+                        pass
+            
+            # Eliminar filas de trades que ya no están abiertos (cerrados)
+            for row_key in row_keys:
+                if row_key not in map(str, bot_trades.keys()):
+                    try:
+                        self.remove_row(row_key)
+                    except Exception:
+                        pass
+        except Exception:
+            # Ignorar errores generales durante la actualización
+            pass
 
 # Panel de historial de operaciones cerradas
 class HistoryPanel(DataTable):
-    def on_mount(self):
+    def compose(self):
+        # Configurar columnas
         self.add_columns("Par", "Entrada", "Salida", "P/L", "Fecha")
-        # Llenar con historial existente si está disponible
-        if hasattr(self.app.bot, 'trades_history'):
-            for trade in self.app.bot.trades_history:
-                self._add_history_row(trade)
+        self.cursor_type = "row"
     
-    def _add_history_row(self, trade):
+    def on_mount(self):
+        # Inicializar con datos existentes
+        self._initialize_rows()
+    
+    def _initialize_rows(self):
+        """Añadir filas iniciales del historial de operaciones"""
+        if hasattr(self.app.bot, 'trades_history'):
+            for index, trade in enumerate(self.app.bot.trades_history):
+                try:
+                    self._add_history_row(trade, index)
+                except Exception:
+                    # Ignorar errores al agregar filas iniciales
+                    pass
+    
+    def _add_history_row(self, trade, row_id=None):
         # Extraer datos del trade con manejo seguro
         pair = trade.get("symbol", "Unknown")
         entry = trade.get("entry_price", 0.0)
@@ -148,28 +215,46 @@ class HistoryPanel(DataTable):
         # Determinar estilo para P/L
         pl_style = "green" if pl >= 0 else "red"
         
+        # Usar row_id como identificador único si se proporciona
+        if row_id is not None:
+            key = f"history_{row_id}"
+        else:
+            # Generar un ID único para la fila
+            key = f"history_{len(self.rows)}"
+        
+        # Añadir fila
         self.add_row(
             pair,
             f"{entry:.8f}",
             f"{exit_price:.8f}",
             f"{pl:.8f}",
             date_str,
+            key=key,
             style=pl_style
         )
         
     def refresh_history(self):
+        """Actualizar historial de operaciones cerradas"""
         # Verificar si el bot tiene trades_history
         if not hasattr(self.app.bot, 'trades_history'):
             return
-            
-        # Contar trades actuales en la tabla
-        current_count = self.row_count
         
-        # Verificar si hay trades nuevos para añadir
-        if len(self.app.bot.trades_history) > current_count:
-            new_trades = self.app.bot.trades_history[current_count:]
-            for trade in new_trades:
-                self._add_history_row(trade)
+        try:
+            # Contar trades actuales en la tabla
+            current_count = self.row_count
+            
+            # Verificar si hay trades nuevos para añadir
+            if len(self.app.bot.trades_history) > current_count:
+                new_trades = self.app.bot.trades_history[current_count:]
+                for i, trade in enumerate(new_trades):
+                    try:
+                        self._add_history_row(trade, current_count + i)
+                    except Exception:
+                        # Ignorar errores al añadir nuevas filas
+                        pass
+        except Exception:
+            # Ignorar errores generales durante la actualización
+            pass
 
 # Panel de estadísticas de rendimiento
 class StatsPanel(Static):
