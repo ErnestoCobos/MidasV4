@@ -301,39 +301,80 @@ class ScalpingStrategy:
         return self.signal_generator.should_close_position(position, current_price, indicators)
     
     def calculate_position_size(self, 
-                              total_capital: float,
-                              symbol: str, 
-                              entry_price: float, 
-                              direction: str,
-                              volatility: float) -> Tuple[float, float, float]:
+                              symbol: str,
+                              account_balance: float = None,
+                              entry_price: float = None, 
+                              stop_loss: float = None,
+                              direction: str = "BUY",
+                              volatility: float = 0.01) -> float:
         """
-        Calculate position size and stop levels
+        Calculate position size for a trade
         
         Args:
-            total_capital: Total capital in account
             symbol: Trading symbol
+            account_balance: Total available balance for trading
             entry_price: Entry price
+            stop_loss: Stop loss price
             direction: Trade direction ('BUY' or 'SELL')
-            volatility: Current market volatility
+            volatility: Current market volatility (optional)
             
         Returns:
-            Tuple of (position_size, stop_loss_price, take_profit_price)
+            Position size quantity
         """
-        # Calculate dynamic stop loss based on volatility
-        stop_loss_price = self.risk_manager.calculate_dynamic_stop_loss(
-            symbol, entry_price, direction, volatility
-        )
-        
-        # Calculate position size based on risk
-        position_sizing = self.risk_manager.calculate_position_size(
-            total_capital, symbol, entry_price, stop_loss_price
-        )
-        
-        return (
-            position_sizing.position_size,
-            position_sizing.stop_loss_price,
-            position_sizing.take_profit_price
-        )
+        try:
+            # Default values
+            if account_balance is None:
+                account_balance = 1000.0  # Default balance
+                
+            if entry_price is None:
+                # Try to get current price
+                entry_price = 0
+                
+            # If stop loss is not provided, calculate it
+            if stop_loss is None:
+                # Calculate a 1% stop loss by default (conservative)
+                if direction == "BUY":
+                    stop_loss = entry_price * 0.99
+                else:
+                    stop_loss = entry_price * 1.01
+            
+            # Calculate position size based on risk (1% of account by default)
+            risk_amount = account_balance * (self.config.max_risk_per_trade / 100)
+            
+            # Calculate price difference for stop loss
+            if direction == "BUY":
+                price_diff = abs(entry_price - stop_loss)
+            else:
+                price_diff = abs(stop_loss - entry_price)
+                
+            # Avoid division by zero
+            if price_diff == 0:
+                price_diff = entry_price * 0.01  # Default 1% movement
+                
+            # Calculate quantity
+            quantity = risk_amount / price_diff
+            
+            # Round quantity to standard precision (varies by symbol)
+            # For BTC, typically 5 decimal places
+            if "BTC" in symbol:
+                quantity = round(quantity, 5)
+            # For ETH, typically 4 decimal places
+            elif "ETH" in symbol:
+                quantity = round(quantity, 4)
+            else:
+                # Default precision
+                quantity = round(quantity, 2)
+                
+            # Default minimum amount
+            if quantity < 0.001:
+                quantity = 0.001
+                
+            self.logger.info(f"Calculated position size for {symbol}: {quantity} units at {entry_price}")
+            return quantity
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating position size: {str(e)}")
+            return 0.001  # Minimum quantity as fallback
     
     def can_open_position(self, symbol: str, position_value: float, total_capital: float) -> bool:
         """Check if a new position can be opened based on risk constraints"""
