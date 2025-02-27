@@ -75,6 +75,45 @@ class ScalpingStrategy:
                 'confidence': 0,
                 'error': str(e)
             }
+            
+    def analyze(self, indicators: Dict[str, Any]):
+        """
+        Analyze indicators and generate a trading signal (for compatibility with bot._process_price_update)
+        
+        Args:
+            indicators: Dictionary of technical indicators
+            
+        Returns:
+            Tuple of (signal, direction, params)
+        """
+        try:
+            # Get symbol from indicators or use a default
+            symbol = indicators.get('symbol', 'UNKNOWN')
+            
+            # Use indicator-based signal generation
+            signal = self._generate_indicator_signal(symbol, indicators)
+            
+            if signal['type'] == SignalType.NEUTRAL:
+                # No signal
+                return False, None, None
+            
+            # Extract direction
+            direction = signal['direction']
+            
+            # Prepare parameters
+            params = {
+                'entry': signal['current_price'],
+                'stop_loss': signal['current_price'] * 0.99 if direction == 'BUY' else signal['current_price'] * 1.01,
+                'take_profit': signal['current_price'] * 1.01 if direction == 'BUY' else signal['current_price'] * 0.99,
+                'strategy_type': 'indicator',
+                'confidence': signal['confidence']
+            }
+            
+            return True, direction, params
+            
+        except Exception as e:
+            self.logger.error(f"Error in analyze method: {str(e)}")
+            return False, None, None
     
     async def _get_model_prediction(self, symbol: str, features) -> float:
         """
