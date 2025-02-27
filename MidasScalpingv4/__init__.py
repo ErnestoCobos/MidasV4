@@ -1,0 +1,1 @@
+# Initialize MidasScalpingv4 package

@@ -50,6 +50,7 @@ uv.lock
 *.swp
 *.swo
 .DS_Store
+._*
 
 # Project specific
 charts/

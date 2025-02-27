@@ -1,0 +1,31 @@
+python-binance>=1.0.16
+pandas>=1.5.0
+numpy>=1.23.0
+websocket-client>=1.4.0
+dataclasses-json>=0.5.7
+python-dotenv>=0.21.0
+pytest>=7.0.0
+matplotlib>=3.6.0
+ta>=0.10.2
+joblib>=1.2.0
+aiohttp>=3.8.4
+requests>=2.28.2
+
+# ML dependencies
+tensorflow>=2.10.0
+xgboost>=1.7.5
+scikit-learn>=1.2.2
+
+# Vultr Inference API support
+regex>=2022.10.31
+
+# CLI UI dependencies
+rich>=12.5.1
+tabulate>=0.9.0
+prompt_toolkit>=3.0.38
+
+# GPU support (optional)
+# Uncomment these if you want to use GPU acceleration
+# nvidia-cuda-runtime-cu11>=11.8.89
+# nvidia-cudnn-cu11>=8.6.0
+# tensorflow-gpu>=2.10.0
