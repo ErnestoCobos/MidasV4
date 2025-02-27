@@ -36,9 +36,13 @@ class Config:
     # System parameters
     use_testnet: bool = True        # Use testnet instead of real trading
     simulation_mode: bool = False   # Run in simulation mode
+    use_real_market_data: bool = True  # Use real market data in simulation mode
     enable_dashboard: bool = True   # Enable dashboard
     min_balance: float = 10.0       # Minimum balance to trade
     log_level: str = "INFO"         # Logging level
+    
+    # Simulation parameters
+    sim_initial_balance: Dict[str, float] = field(default_factory=lambda: {"USDT": 10000.0, "BTC": 0.15, "ETH": 2.0, "BNB": 10.0})
     
     # Technical parameters
     baseline_volatility: float = 0.01  # Baseline volatility
@@ -69,6 +73,21 @@ class Config:
             load_dotenv()
         except ImportError:
             pass
+        
+        # Parse simulation parameters
+        simulation_mode = os.environ.get("SIMULATION_MODE", "false").lower() in ["true", "yes", "1", "y"]
+        use_real_market_data = os.environ.get("USE_REAL_MARKET_DATA", "true").lower() in ["true", "yes", "1", "y"]
+        
+        # Parse initial simulation balances
+        sim_initial_balance = {}
+        if "SIM_BALANCE_USDT" in os.environ:
+            sim_initial_balance["USDT"] = float(os.environ.get("SIM_BALANCE_USDT"))
+        if "SIM_BALANCE_BTC" in os.environ:
+            sim_initial_balance["BTC"] = float(os.environ.get("SIM_BALANCE_BTC"))
+        if "SIM_BALANCE_ETH" in os.environ:
+            sim_initial_balance["ETH"] = float(os.environ.get("SIM_BALANCE_ETH"))
+        if "SIM_BALANCE_BNB" in os.environ:
+            sim_initial_balance["BNB"] = float(os.environ.get("SIM_BALANCE_BNB"))
             
         return cls(
             api_key=os.environ.get("BINANCE_API_KEY", ""),
@@ -80,6 +99,9 @@ class Config:
             stop_loss_pct=float(os.environ.get("STOP_LOSS_PERCENT", "0.5")),
             take_profit_pct=float(os.environ.get("TAKE_PROFIT_PERCENT", "1.0")),
             use_testnet=os.environ.get("USE_TESTNET", "true").lower() == "true",
+            simulation_mode=simulation_mode,
+            use_real_market_data=use_real_market_data,
+            sim_initial_balance=sim_initial_balance or None,
         )
 
 
@@ -89,6 +111,9 @@ def load_config(config_path: str) -> Config:
         with open(config_path, 'r') as f:
             config_dict = json.load(f)
             
+        # Process simulation balances if present
+        sim_initial_balance = config_dict.get('sim_initial_balance', None)
+        
         # Create Config object with values from file
         config = Config(
             api_key=config_dict.get('api_key', ''),
@@ -103,6 +128,8 @@ def load_config(config_path: str) -> Config:
             model_type=config_dict.get('model_type', 'xgboost'),
             use_testnet=config_dict.get('use_testnet', True),
             simulation_mode=config_dict.get('simulation_mode', False),
+            use_real_market_data=config_dict.get('use_real_market_data', True),
+            sim_initial_balance=sim_initial_balance,
         )
         
         return config
@@ -126,7 +153,12 @@ def save_config(config: Config, config_path: str) -> None:
         'model_type': config.model_type,
         'use_testnet': config.use_testnet,
         'simulation_mode': config.simulation_mode,
+        'use_real_market_data': config.use_real_market_data if hasattr(config, 'use_real_market_data') else True,
     }
+    
+    # Add simulation balances if present
+    if hasattr(config, 'sim_initial_balance') and config.sim_initial_balance:
+        config_dict['sim_initial_balance'] = config.sim_initial_balance
     
     with open(config_path, 'w') as f:
         json.dump(config_dict, f, indent=4)

@@ -41,6 +41,12 @@ def parse_arguments():
                         
     parser.add_argument('--simulate', action='store_true',
                         help='Run in simulation mode without connecting to exchange API')
+                        
+    parser.add_argument('--real-data', action='store_true',
+                        help='Use real market data from Binance API in simulation mode')
+                        
+    parser.add_argument('--sim-balance', type=str, default=None,
+                        help='Initial balance for simulation (format: "USDT:10000,BTC:0.5,ETH:5")')
     
     # Model-related arguments
     parser.add_argument('--model', type=str, default=None,
@@ -187,7 +193,29 @@ def main():
         if args.simulate:
             config.api_key = "simulation_mode_key"
             config.api_secret = "simulation_mode_secret"
-            print("   ✅ Modo simulación activado (sin conexión a Binance)")
+            config.simulation_mode = True
+            
+            # Configure real market data in simulation mode if requested
+            if args.real_data:
+                config.use_real_market_data = True
+                print("   ✅ Modo simulación activado (con datos reales de mercado)")
+            else:
+                config.use_real_market_data = False
+                print("   ✅ Modo simulación activado (con datos simulados)")
+                
+            # Configure custom initial balance if provided
+            if args.sim_balance:
+                try:
+                    sim_balance = {}
+                    for balance_str in args.sim_balance.split(','):
+                        asset, amount = balance_str.split(':')
+                        sim_balance[asset.strip()] = float(amount.strip())
+                    
+                    config.sim_initial_balance = sim_balance
+                    print(f"   ✅ Balance inicial simulado configurado: {sim_balance}")
+                except Exception as e:
+                    print(f"   ⚠️ Error al configurar balance inicial simulado: {str(e)}")
+                    logger.warning(f"Error parsing simulation balance: {str(e)}")
         elif args.testnet:
             print("   ✅ Modo testnet activado (conectado a Binance Testnet)")
         

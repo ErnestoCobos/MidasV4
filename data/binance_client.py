@@ -140,6 +140,34 @@ class BinanceClient:
         
         # Simulate get_klines
         if endpoint == '/api/v3/klines':
+            # If use_real_market_data is enabled, try to get real data from Binance
+            if hasattr(self.config, 'use_real_market_data') and self.config.use_real_market_data:
+                try:
+                    # Use a temporary HTTP session to get real market data
+                    self.logger.info("Using real market data for simulation")
+                    
+                    symbol = params.get('symbol', 'BTCUSDT')
+                    interval = params.get('interval', '1m')
+                    limit = int(params.get('limit', 100))
+                    
+                    # Create a temporary session
+                    import requests
+                    url = f"{self.base_url}/api/v3/klines"
+                    response = requests.get(url, params={
+                        'symbol': symbol,
+                        'interval': interval,
+                        'limit': limit
+                    }, timeout=10)
+                    
+                    if response.status_code == 200:
+                        self.logger.debug("Successfully fetched real klines data")
+                        return response.json()
+                    else:
+                        self.logger.warning(f"Failed to fetch real klines data, status: {response.status_code}. Falling back to simulation.")
+                except Exception as e:
+                    self.logger.warning(f"Error fetching real klines data: {str(e)}. Falling back to simulation.")
+            
+            # If real data fetch failed or is disabled, generate simulated klines
             symbol = params.get('symbol', 'BTCUSDT')
             interval = params.get('interval', '1m')
             limit = int(params.get('limit', 100))
@@ -205,6 +233,37 @@ class BinanceClient:
         
         # Simulate get_ticker
         elif endpoint == '/api/v3/ticker/price':
+            # If use_real_market_data is enabled, try to get real price data from Binance
+            if hasattr(self.config, 'use_real_market_data') and self.config.use_real_market_data:
+                try:
+                    symbol = params.get('symbol', None)
+                    # Use a temporary HTTP session to get real market data
+                    import requests
+                    url = f"{self.base_url}/api/v3/ticker/price"
+                    
+                    if symbol:
+                        response = requests.get(url, params={'symbol': symbol}, timeout=5)
+                    else:
+                        response = requests.get(url, timeout=5)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        # Update the price cache with the real prices
+                        if isinstance(data, list):
+                            for ticker in data:
+                                self.price_cache[ticker['symbol']] = float(ticker['price'])
+                        else:
+                            self.price_cache[data['symbol']] = float(data['price'])
+                            
+                        # Return the real data
+                        return data
+                    else:
+                        self.logger.warning(f"Failed to fetch real ticker data, status: {response.status_code}. Falling back to simulation.")
+                except Exception as e:
+                    self.logger.warning(f"Error fetching real ticker data: {str(e)}. Falling back to simulation.")
+                    
+            # If real data fetch failed or is disabled, generate simulated tickers
             symbol = params.get('symbol', None)
             
             if symbol:
@@ -242,6 +301,24 @@ class BinanceClient:
         
         # Simulate get_account
         elif endpoint == '/api/v3/account':
+            # Use configured initial balances if available
+            balances = []
+            if hasattr(self.config, 'sim_initial_balance') and self.config.sim_initial_balance:
+                for asset, amount in self.config.sim_initial_balance.items():
+                    balances.append({
+                        'asset': asset,
+                        'free': str(amount),
+                        'locked': '0.0'
+                    })
+            else:
+                # Default balances
+                balances = [
+                    {'asset': 'BTC', 'free': '0.1', 'locked': '0.0'},
+                    {'asset': 'ETH', 'free': '2.0', 'locked': '0.0'},
+                    {'asset': 'USDT', 'free': '10000.0', 'locked': '0.0'},
+                    {'asset': 'BNB', 'free': '10.0', 'locked': '0.0'}
+                ]
+            
             return {
                 'makerCommission': 10,
                 'takerCommission': 10,
@@ -252,12 +329,7 @@ class BinanceClient:
                 'canDeposit': True,
                 'updateTime': int(time.time() * 1000),
                 'accountType': 'SPOT',
-                'balances': [
-                    {'asset': 'BTC', 'free': '0.1', 'locked': '0.0'},
-                    {'asset': 'ETH', 'free': '2.0', 'locked': '0.0'},
-                    {'asset': 'USDT', 'free': '10000.0', 'locked': '0.0'},
-                    {'asset': 'BNB', 'free': '10.0', 'locked': '0.0'}
-                ]
+                'balances': balances
             }
         
         # Simulate create_order
@@ -369,17 +441,50 @@ class BinanceClient:
             base_price = 65000.0 if 'BTC' in symbol else (3500.0 if 'ETH' in symbol else 100.0)
             self.price_cache[symbol] = base_price
         
+        # Flag to check if we're using real market data
+        use_real_data = hasattr(self.config, 'use_real_market_data') and self.config.use_real_market_data
+        
         # Function to generate random price change
         def get_new_price(old_price):
             change_pct = (random.random() - 0.5) * 0.001  # -0.05% to +0.05%
             return old_price * (1 + change_pct)
         
+        # Function to fetch real price data from Binance
+        async def fetch_real_price(symbol_to_fetch):
+            try:
+                import aiohttp
+                url = f"{self.base_url}/api/v3/ticker/price"
+                params = {'symbol': symbol_to_fetch}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=5) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            return float(data['price'])
+                        else:
+                            self.logger.warning(f"Failed to fetch real price for {symbol_to_fetch}, status: {response.status}")
+                            return None
+            except Exception as e:
+                self.logger.warning(f"Error fetching real price for {symbol_to_fetch}: {str(e)}")
+                return None
+        
         # Simulate different stream types
         while True:
             try:
-                # Update price with random change
-                price = get_new_price(self.price_cache[symbol])
-                self.price_cache[symbol] = price
+                # Update price - either fetch real data or generate random change
+                if use_real_data:
+                    real_price = await fetch_real_price(symbol)
+                    if real_price is not None:
+                        price = real_price
+                        self.price_cache[symbol] = price
+                    else:
+                        # Fall back to simulated price if real price fetch failed
+                        price = get_new_price(self.price_cache[symbol])
+                        self.price_cache[symbol] = price
+                else:
+                    # Use simulated price
+                    price = get_new_price(self.price_cache[symbol])
+                    self.price_cache[symbol] = price
                 
                 if stream_type == 'ticker':
                     # Simulate ticker data

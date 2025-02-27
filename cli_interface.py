@@ -18,7 +18,7 @@ from rich.panel import Panel
 from rich.layout import Layout
 from rich.text import Text
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 from rich import box
 
 from config import Config
@@ -70,6 +70,12 @@ def parse_arguments():
     
     parser.add_argument('--simulate', action='store_true',
                       help='Run in simulation mode without connecting to exchange API')
+                      
+    parser.add_argument('--real-data', action='store_true',
+                      help='Use real market data from Binance API in simulation mode')
+                      
+    parser.add_argument('--sim-balance', type=str, default=None,
+                      help='Initial balance for simulation (format: "USDT:10000,BTC:0.5,ETH:5")')
     
     # Model-related arguments
     parser.add_argument('--model', type=str, default=None,
@@ -129,6 +135,28 @@ def setup_bot(args):
         if args.simulate:
             config.api_key = "simulation_mode_key"
             config.api_secret = "simulation_mode_secret"
+            config.simulation_mode = True
+            
+            # Configure real market data in simulation mode if requested
+            if args.real_data:
+                config.use_real_market_data = True
+                console.print("[bold green]Using real market data in simulation mode")
+            else:
+                config.use_real_market_data = False
+            
+            # Configure custom initial balance if provided
+            if args.sim_balance:
+                try:
+                    sim_balance = {}
+                    for balance_str in args.sim_balance.split(','):
+                        asset, amount = balance_str.split(':')
+                        sim_balance[asset.strip()] = float(amount.strip())
+                    
+                    config.sim_initial_balance = sim_balance
+                    console.print(f"[bold green]Initial simulation balance set: {sim_balance}")
+                except Exception as e:
+                    console.print(f"[bold red]Error parsing simulation balance: {str(e)}")
+                    logger.warning(f"Error parsing simulation balance: {str(e)}")
         
         # Initialize bot
         bot = ScalpingBot(config)
