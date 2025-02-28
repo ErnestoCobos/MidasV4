@@ -17,21 +17,23 @@ class Config:
     max_open_trades: int = 3
     
     # Risk management
-    max_risk_per_trade: float = 1.0  # Max % of capital to risk per trade
-    max_exposure_pct: float = 10.0   # Max % of capital in open positions
-    max_exposure_per_symbol_pct: float = 5.0  # Max % per symbol
-    stop_loss_pct: float = 0.5       # Default stop loss percentage
-    take_profit_pct: float = 1.0     # Default take profit percentage
-    trailing_stop_pct: float = 0.3   # Trailing stop percentage
+    max_risk_per_trade: float = 0.5  # Max % of capital to risk per trade (reduced from 1.0%)
+    max_exposure_pct: float = 8.0    # Max % of capital in open positions (reduced from 10.0%)
+    max_exposure_per_symbol_pct: float = 4.0  # Max % per symbol (reduced from 5.0%)
+    stop_loss_pct: float = 1.0       # Default stop loss percentage (increased from 0.5%)
+    take_profit_pct: float = 3.0     # Default take profit percentage (increased for better risk/reward)
+    trailing_stop_pct: float = 0.5   # Trailing stop percentage (increased from 0.3%)
+    risk_reward_ratio: float = 3.0   # Target risk/reward ratio
     
     # Strategy parameters
     timeframe: str = "1m"           # Default timeframe for analysis
-    rsi_oversold: int = 30          # RSI oversold threshold
-    rsi_overbought: int = 70        # RSI overbought threshold
+    rsi_oversold: int = 35          # RSI oversold threshold (increased from 30)
+    rsi_overbought: int = 65        # RSI overbought threshold (decreased from 70)
     sequence_length: int = 10       # Sequence length for LSTM
     model_type: str = "xgboost"     # Model type (lstm, xgboost)
-    confidence_threshold: float = 0.6  # Min confidence for signals
-    min_profit_threshold: float = 0.2  # Min expected profit to trade
+    confidence_threshold: float = 0.65  # Min confidence for signals (increased from 0.6)
+    min_profit_threshold: float = 0.3   # Min expected profit to trade (increased from 0.2)
+    min_trade_quantity: float = 0.001   # Cantidad mínima para operar (ajustable según el par)
     
     # System parameters
     use_testnet: bool = True        # Use testnet instead of real trading
@@ -45,14 +47,23 @@ class Config:
     sim_initial_balance: Dict[str, float] = field(default_factory=lambda: {"USDT": 10000.0, "BTC": 0.15, "ETH": 2.0, "BNB": 10.0})
     
     # Technical parameters
-    baseline_volatility: float = 0.01  # Baseline volatility
-    default_volatility: float = 0.01   # Default volatility
-    take_profit_ratio: float = 2.0     # TP:SL ratio
-    base_stop_loss_pct: float = 0.5    # Base stop loss percentage
-    max_stop_loss_pct: float = 2.0     # Max stop loss percentage
-    use_price_protection: bool = True  # Use price protection
-    xgb_rounds: int = 100              # Number of boosting rounds
-    feature_count: int = 25            # Number of features
+    baseline_volatility: float = 0.015  # Baseline volatility (increased from 0.01)
+    default_volatility: float = 0.015   # Default volatility (increased from 0.01)
+    take_profit_ratio: float = 3.0      # TP:SL ratio (increased from 2.0)
+    base_stop_loss_pct: float = 1.0     # Base stop loss percentage (increased from 0.5)
+    max_stop_loss_pct: float = 2.0      # Max stop loss percentage
+    use_price_protection: bool = True   # Use price protection
+    xgb_rounds: int = 100               # Number of boosting rounds
+    feature_count: int = 25             # Number of features
+    
+    # Market regime parameters
+    regime_lookback_period: int = 20        # Lookback period for regime detection
+    volatility_threshold: float = 0.015     # Volatility threshold for regime classification
+    trend_strength_threshold: float = 0.7   # Trend strength threshold for regime classification
+    
+    # Configuración específica para operaciones spot
+    enforce_spot_balance: bool = True       # Asegurar que nunca se opere con saldo negativo
+    safety_margin_pct: float = 1.0          # Margen de seguridad para comisiones (porcentaje)
     
     def validate(self) -> bool:
         """Validate that required configuration is present"""

@@ -94,6 +94,20 @@ class BinanceClient:
                     # Call callback with simulated data
                     callback(ticker_data)
                     
+                    # Update P/L for any open trades that match this symbol
+                    if hasattr(self, 'bot') and hasattr(self.bot, 'open_trades'):
+                        for trade_id, trade in self.bot.open_trades.items():
+                            if trade['symbol'] == symbol:
+                                # Update P/L directly based on current price
+                                side = trade['side']
+                                entry_price = trade['entry_price']
+                                quantity = trade['quantity']
+                                
+                                if side == 'BUY':
+                                    trade['profit_loss'] = (current_price - entry_price) * quantity
+                                else:  # SELL
+                                    trade['profit_loss'] = (entry_price - current_price) * quantity
+                    
                     # Sleep for random time (0.5 to 3 seconds)
                     time.sleep(0.5 + random.random() * 2.5)
             
@@ -181,7 +195,24 @@ class BinanceClient:
 
         Returns:
             Dict[str, Any]: Order details including main order and SL/TP orders
+            
+        Raises:
+            APIError: Si no hay fondos suficientes o hay un error en la API
         """
+        # Validar los fondos disponibles (especialmente para compras)
+        if side.upper() == 'BUY' and not self.simulation_mode:
+            # Verificar fondos disponibles para operaciones reales (no simulación)
+            quote_asset = symbol[3:]  # e.g., 'USDT' from 'BTCUSDT'
+            quote_balance = self.get_account_balance(quote_asset).get(quote_asset, 0)
+            
+            # Obtener precio actual para mercado o usar el precio especificado para limit
+            current_price = price if price else self.get_market_price(symbol)
+            required_funds = float(quantity) * float(current_price)
+            
+            if required_funds > quote_balance:
+                error_msg = f"Fondos insuficientes para {symbol}: {required_funds} {quote_asset} requeridos, {quote_balance} {quote_asset} disponibles"
+                logger.error(error_msg)
+                raise APIError(error_msg)
         if self.simulation_mode:
             # In simulation mode, generate mock order responses
             order_id = int(time.time() * 1000)  # Use timestamp as order ID
@@ -512,6 +543,45 @@ class BinanceClient:
                 current_price = 65000.0 if 'BTC' in symbol else (3500.0 if 'ETH' in symbol else 100.0)
             else:
                 current_price = float(price)
+                
+            # Verificar fondos suficientes para la operación (spot)
+            if side == 'BUY':
+                quote_asset = symbol[3:]  # e.g., 'USDT' from 'BTCUSDT'
+                quote_balance = self.get_account_balance(quote_asset).get(quote_asset, 0)
+                order_cost = float(quantity) * current_price
+                
+                # Si no hay fondos suficientes, simular error de fondos insuficientes
+                if order_cost > quote_balance:
+                    error_msg = f"Fondos insuficientes para {symbol}: requiere {order_cost} {quote_asset}, disponible {quote_balance} {quote_asset}"
+                    logger.error(error_msg)
+                    raise APIError(error_msg)
+                    
+                # Actualizar balances simulados - restar USDT/moneda base utilizada
+                if hasattr(self, 'bot') and hasattr(self.bot, 'config') and hasattr(self.bot.config, 'sim_initial_balance'):
+                    if quote_asset in self.bot.config.sim_initial_balance:
+                        # Restar el costo de la orden del balance simulado
+                        self.bot.config.sim_initial_balance[quote_asset] -= order_cost
+            
+            elif side == 'SELL':
+                # Para ventas, verificar que tenemos suficiente del activo a vender
+                base_asset = symbol[:3]  # e.g., 'BTC' from 'BTCUSDT'
+                base_balance = self.get_account_balance(base_asset).get(base_asset, 0)
+                
+                if float(quantity) > base_balance:
+                    error_msg = f"Fondos insuficientes para {symbol}: requiere {quantity} {base_asset}, disponible {base_balance} {base_asset}"
+                    logger.error(error_msg)
+                    raise APIError(error_msg)
+                    
+                # Actualizar balances simulados - restar la cantidad del activo vendido
+                if hasattr(self, 'bot') and hasattr(self.bot, 'config') and hasattr(self.bot.config, 'sim_initial_balance'):
+                    if base_asset in self.bot.config.sim_initial_balance:
+                        # Restar la cantidad vendida del balance simulado
+                        self.bot.config.sim_initial_balance[base_asset] -= float(quantity)
+                        
+                    # Añadir el importe recibido en moneda base
+                    quote_asset = symbol[3:]
+                    if quote_asset in self.bot.config.sim_initial_balance:
+                        self.bot.config.sim_initial_balance[quote_asset] += float(quantity) * current_price
             
             # Create simulated order response
             order = {

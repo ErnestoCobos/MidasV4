@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any
 import threading
 import queue
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from binance.client import Client
 import os
@@ -16,15 +16,20 @@ from strategy.llm_strategy import LLMScalpingStrategy
 from binance_client import BinanceClient
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger('ScalpingBot')
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+# Solo configurar logging si aún no ha sido configurado
+if not logging.getLogger('ScalpingBot').handlers:
+    file_handler = logging.FileHandler("logs/bot.log")
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    
+    logger = logging.getLogger('ScalpingBot')
+    logger.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+    logger.propagate = False  # Evitar duplicación de logs
+else:
+    logger = logging.getLogger('ScalpingBot')
 
 class ScalpingBot:
     """
@@ -52,12 +57,127 @@ class ScalpingBot:
         total_balance = 0.0
         try:
             if hasattr(self, 'binance_client'):
-                # En un caso real, calcularíamos el balance total
-                # Para simplificar, devolvemos un valor fijo para la TUI
-                total_balance = 1000.0
-        except:
-            pass
+                # Obtener P/L actual de operaciones abiertas
+                open_trades_pl = sum(trade.get('profit_loss', 0) for trade in self.open_trades.values())
+                
+                # Para modo simulación, calcular balance basado en trades y balance inicial
+                if hasattr(self.binance_client, 'simulation_mode') and self.binance_client.simulation_mode:
+                    # Obtener balance de simulación
+                    if hasattr(self, 'config') and hasattr(self.config, 'sim_initial_balance'):
+                        # Obtener el balance USDT inicial configurado
+                        usdt_balance = self.config.sim_initial_balance.get('USDT', 1000.0)
+                        
+                        # Calcular fondos reservados para posiciones abiertas
+                        # Importante: en spot, estos fondos ya están restados del balance disponible
+                        reserved_funds = 0.0
+                        for trade in self.open_trades.values():
+                            if trade['side'] == 'BUY':
+                                # Para compras en spot, los fondos ya están utilizados
+                                reserved_funds += trade['quantity'] * trade['entry_price']
+                        
+                        # Añadir las ganancias/pérdidas totales y restar fondos reservados
+                        total_balance = usdt_balance + self.total_profit_loss - reserved_funds
+                        
+                        # Sumar P/L no realizado de operaciones abiertas
+                        total_balance += open_trades_pl
+                    else:
+                        # Valor predeterminado
+                        total_balance = 1000.0 + self.total_profit_loss + open_trades_pl
+                else:
+                    # En un exchange real, obtener balances de la API
+                    balances = self.binance_client.get_account_balance()
+                    quote_asset = 'USDT'  # Moneda base para calcular balance
+                    
+                    # Sumar todos los activos convertidos a USDT (simplificado)
+                    total_balance = balances.get(quote_asset, 0.0) + open_trades_pl
+            else:
+                # Si no hay cliente binance, devolvemos un valor predeterminado
+                total_balance = 0.0
+                
+            # Verificar que no sea negativo (en spot no es posible)
+            if total_balance < 0:
+                logger.warning(f"Balance calculado negativo ({total_balance}), ajustando a 0")
+                total_balance = 0.0
+                
+        except Exception as e:
+            logger.error(f"Error al calcular balance: {str(e)}")
+            total_balance = 0.0
+            
         return total_balance
+        
+    # Método auxiliar para obtener balances desglosados por activo
+    def get_detailed_balances(self):
+        """Obtener diccionario de balances por activo"""
+        balances = {}
+        try:
+            if hasattr(self, 'binance_client'):
+                if hasattr(self.binance_client, 'simulation_mode') and self.binance_client.simulation_mode:
+                    # En modo simulación, usar balances simulados
+                    if hasattr(self, 'config') and hasattr(self.config, 'sim_initial_balance'):
+                        # Copiar balances iniciales
+                        balances = dict(self.config.sim_initial_balance)
+                        
+                        # Actualizar balances basados en operaciones abiertas y cerradas
+                        for symbol, trade in self.open_trades.items():
+                            # Para compras en spot, ya hemos gastado USDT para comprar el activo
+                            if trade['side'] == 'BUY':
+                                base_asset = symbol[:3] if len(symbol) >= 3 else symbol  # e.g., 'BTC' from 'BTCUSDT'
+                                quote_asset = symbol[3:] if len(symbol) >= 6 else 'USDT'  # e.g., 'USDT' from 'BTCUSDT'
+                                
+                                # Restar USDT utilizado (ya deberías haberlo hecho al abrir la posición)
+                                cost = trade['quantity'] * trade['entry_price']
+                                if quote_asset in balances:
+                                    # Los fondos ya deberían haberse restado, pero nos aseguramos
+                                    balances[quote_asset] = max(0, balances.get(quote_asset, 0) - cost)
+                                
+                                # Añadir cantidad del activo comprado
+                                if base_asset in balances:
+                                    balances[base_asset] = balances.get(base_asset, 0) + trade['quantity']
+                                else:
+                                    balances[base_asset] = trade['quantity']
+                            
+                            # Para ventas en spot, ya hemos vendido el activo y recibido USDT
+                            elif trade['side'] == 'SELL':
+                                base_asset = symbol[:3] if len(symbol) >= 3 else symbol
+                                quote_asset = symbol[3:] if len(symbol) >= 6 else 'USDT'
+                                
+                                # El activo ya debería haberse restado, pero nos aseguramos
+                                if base_asset in balances:
+                                    balances[base_asset] = max(0, balances.get(base_asset, 0) - trade['quantity'])
+                                
+                                # El USDT recibido ya debería haberse añadido al abrir la posición
+                                
+                        # Ajustar USDT con ganancias/pérdidas
+                        if 'USDT' in balances:
+                            # Solo sumamos P/L de operaciones cerradas
+                            balances['USDT'] += self.total_profit_loss
+                            
+                            # Para evitar saldos negativos en spot
+                            balances['USDT'] = max(0, balances['USDT'])
+                    else:
+                        # Valores predeterminados
+                        balances = {
+                            'USDT': max(0, 1000.0 + self.total_profit_loss),
+                            'BTC': 0.0,
+                            'ETH': 0.0
+                        }
+                else:
+                    # En un exchange real, llamamos a la API para obtener balances actualizados
+                    balances = self.binance_client.get_account_balance()
+            else:
+                balances = {'USDT': 0.0}
+                
+            # Verificar que no haya balances negativos (no es posible en spot)
+            for asset, amount in list(balances.items()):
+                if amount < 0:
+                    logger.warning(f"Balance negativo detectado para {asset}: {amount}, ajustando a 0")
+                    balances[asset] = 0.0
+                    
+        except Exception as e:
+            logger.error(f"Error al obtener balances detallados: {str(e)}")
+            balances = {'USDT': 0.0, 'ERROR': str(e)}
+            
+        return balances
     
     def __init__(self, config: Config):
         """Initialize the bot with configuration"""
@@ -225,37 +345,53 @@ class ScalpingBot:
             
     def _add_demo_trades(self):
         """Add demo trades for TUI visualization (simulation mode only)"""
+        logger.info("Adding demo trades for TUI visualization")
         try:
-            # Add some open trades for demonstration
-            self.open_trades = {
-                "BTC1": {
+            # Verificar que tenemos acceso a la base de datos
+            if not hasattr(self, 'db') or self.db is None:
+                logger.error("No database connection available for adding demo trades")
+                return
+                
+            # Añadir operaciones abiertas de demostración
+            open_trades = [
+                {
                     "symbol": "BTCUSDT",
                     "side": "BUY",
                     "quantity": 0.01,
                     "entry_price": 68500.0,
                     "stop_loss": 67800.0,
                     "take_profit": 69800.0,
-                    "time_opened": datetime.now() - timedelta(hours=2),
+                    "entry_time": datetime.now() - timedelta(hours=2),
                     "order_id": "12345",
                     "strategy_type": "indicator",
-                    "profit_loss": 120.50
+                    "status": "open",
+                    "is_simulation": 1
                 },
-                "ETH1": {
+                {
                     "symbol": "ETHUSDT",
                     "side": "SELL",
                     "quantity": 0.5,
                     "entry_price": 3850.0,
                     "stop_loss": 3900.0,
                     "take_profit": 3700.0,
-                    "time_opened": datetime.now() - timedelta(hours=1),
+                    "entry_time": datetime.now() - timedelta(hours=1),
                     "order_id": "12346",
                     "strategy_type": "indicator",
-                    "profit_loss": -25.75
+                    "status": "open",
+                    "is_simulation": 1
                 }
-            }
+            ]
             
-            # Add some trade history for demonstration
-            self.trades_history = [
+            # Almacenar operaciones abiertas en la base de datos
+            for trade in open_trades:
+                trade_id = self.db.store_trade(trade)
+                if trade_id:
+                    logger.info(f"Added demo open trade {trade['symbol']} with ID {trade_id}")
+                else:
+                    logger.error(f"Failed to add demo open trade {trade['symbol']}")
+            
+            # Añadir historial de operaciones cerradas
+            closed_trades = [
                 {
                     "symbol": "BTCUSDT",
                     "side": "BUY",
@@ -264,12 +400,14 @@ class ScalpingBot:
                     "exit_price": 65500.0,
                     "stop_loss": 64500.0,
                     "take_profit": 66000.0,
-                    "time_opened": datetime.now() - timedelta(days=1, hours=4),
-                    "time_closed": datetime.now() - timedelta(days=1, hours=2),
+                    "entry_time": datetime.now() - timedelta(days=1, hours=4),
+                    "exit_time": datetime.now() - timedelta(days=1, hours=2),
                     "order_id": "12340",
                     "strategy_type": "indicator",
                     "profit_loss": 10.0,
-                    "reason": "take_profit"
+                    "exit_reason": "take_profit",
+                    "status": "closed",
+                    "is_simulation": 1
                 },
                 {
                     "symbol": "ETHUSDT",
@@ -279,12 +417,14 @@ class ScalpingBot:
                     "exit_price": 3800.0,
                     "stop_loss": 4000.0,
                     "take_profit": 3750.0,
-                    "time_opened": datetime.now() - timedelta(days=1, hours=6),
-                    "time_closed": datetime.now() - timedelta(days=1, hours=4),
+                    "entry_time": datetime.now() - timedelta(days=1, hours=6),
+                    "exit_time": datetime.now() - timedelta(days=1, hours=4),
                     "order_id": "12341",
                     "strategy_type": "llm",
                     "profit_loss": 100.0,
-                    "reason": "take_profit"
+                    "exit_reason": "take_profit",
+                    "status": "closed",
+                    "is_simulation": 1
                 },
                 {
                     "symbol": "BTCUSDT",
@@ -294,12 +434,14 @@ class ScalpingBot:
                     "exit_price": 66500.0,
                     "stop_loss": 67500.0,
                     "take_profit": 66000.0,
-                    "time_opened": datetime.now() - timedelta(days=2, hours=2),
-                    "time_closed": datetime.now() - timedelta(days=2),
+                    "entry_time": datetime.now() - timedelta(days=2, hours=2),
+                    "exit_time": datetime.now() - timedelta(days=2),
                     "order_id": "12342",
                     "strategy_type": "indicator",
                     "profit_loss": 7.5,
-                    "reason": "take_profit"
+                    "exit_reason": "take_profit",
+                    "status": "closed",
+                    "is_simulation": 1
                 },
                 {
                     "symbol": "ETHUSDT",
@@ -309,18 +451,204 @@ class ScalpingBot:
                     "exit_price": 3650.0,
                     "stop_loss": 3650.0,
                     "take_profit": 3800.0,
-                    "time_opened": datetime.now() - timedelta(days=2, hours=6),
-                    "time_closed": datetime.now() - timedelta(days=2, hours=4),
+                    "entry_time": datetime.now() - timedelta(days=2, hours=6),
+                    "exit_time": datetime.now() - timedelta(days=2, hours=4),
                     "order_id": "12343",
                     "strategy_type": "indicator",
                     "profit_loss": -37.5,
-                    "reason": "stop_loss"
+                    "exit_reason": "stop_loss",
+                    "status": "closed",
+                    "is_simulation": 1
                 }
             ]
             
-            logger.info("Added demo trades for simulation")
+            # Almacenar operaciones cerradas en la base de datos
+            for trade in closed_trades:
+                trade_id = self.db.store_trade(trade)
+                if trade_id:
+                    logger.info(f"Added demo closed trade {trade['symbol']} with ID {trade_id}")
+                else:
+                    logger.error(f"Failed to add demo closed trade {trade['symbol']}")
+            
+            # Cargar operaciones desde la base de datos para mantener la compatibilidad con el código existente
+            self._load_trades_from_database()
+                
         except Exception as e:
             logger.error(f"Error adding demo trades: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+    def _load_trades_from_database(self):
+        """Cargar operaciones desde la base de datos a las estructuras en memoria"""
+        logger.info("Cargando operaciones desde la base de datos")
+        try:
+            if not hasattr(self, 'db') or self.db is None:
+                logger.error("No database connection available for loading trades")
+                return
+                
+            # Determinar si estamos en modo simulación
+            is_simulation = hasattr(self.config, 'simulation_mode') and self.config.simulation_mode
+            
+            # Cargar operaciones abiertas
+            open_trades_list = self.db.get_open_trades(is_simulation=is_simulation)
+            logger.info(f"Cargadas {len(open_trades_list)} operaciones abiertas desde la base de datos")
+            
+            # Convertir a diccionario para compatibilidad con el código existente
+            self.open_trades = {}
+            for trade in open_trades_list:
+                # Crear clave única para el diccionario
+                trade_key = f"{trade['symbol']}_{trade['id']}"
+                
+                # Convertir campos de la base de datos al formato esperado por el código existente
+                formatted_trade = {
+                    'symbol': trade['symbol'],
+                    'side': trade['side'],
+                    'quantity': trade['quantity'],
+                    'entry_price': trade['entry_price'],
+                    'stop_loss': trade['stop_loss'],
+                    'take_profit': trade['take_profit'],
+                    'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
+                    'order_id': trade['order_id'],
+                    'strategy_type': trade['strategy_type'],
+                    'db_id': trade['id']
+                }
+                
+                # Añadir campos opcionales si existen
+                if 'profit_loss' in trade and trade['profit_loss'] is not None:
+                    formatted_trade['profit_loss'] = trade['profit_loss']
+                if 'confidence' in trade and trade['confidence'] is not None:
+                    formatted_trade['confidence'] = trade['confidence']
+                if 'model_used' in trade and trade['model_used'] is not None:
+                    formatted_trade['model_used'] = trade['model_used']
+                
+                self.open_trades[trade_key] = formatted_trade
+            
+            # Cargar historial de operaciones cerradas
+            closed_trades_list = self.db.get_trades_history(is_simulation=is_simulation)
+            logger.info(f"Cargadas {len(closed_trades_list)} operaciones cerradas desde la base de datos")
+            
+            # Convertir a lista para compatibilidad con el código existente
+            self.trades_history = []
+            for trade in closed_trades_list:
+                # Convertir campos de la base de datos al formato esperado por el código existente
+                formatted_trade = {
+                    'symbol': trade['symbol'],
+                    'side': trade['side'],
+                    'quantity': trade['quantity'],
+                    'entry_price': trade['entry_price'],
+                    'exit_price': trade['exit_price'],
+                    'stop_loss': trade['stop_loss'] if 'stop_loss' in trade else None,
+                    'take_profit': trade['take_profit'] if 'take_profit' in trade else None,
+                    'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
+                    'time_closed': datetime.fromisoformat(trade['exit_time']) if isinstance(trade['exit_time'], str) else trade['exit_time'],
+                    'order_id': trade['order_id'] if 'order_id' in trade else None,
+                    'strategy_type': trade['strategy_type'],
+                    'profit_loss': trade['profit_loss'],
+                    'reason': trade['exit_reason'] if 'exit_reason' in trade else 'unknown'
+                }
+                
+                # Añadir campos opcionales si existen
+                if 'confidence' in trade and trade['confidence'] is not None:
+                    formatted_trade['confidence'] = trade['confidence']
+                if 'model_used' in trade and trade['model_used'] is not None:
+                    formatted_trade['model_used'] = trade['model_used']
+                
+                self.trades_history.append(formatted_trade)
+            
+            # Calcular P/L total
+            self.total_profit_loss = sum(t.get('profit_loss', 0) for t in self.trades_history)
+            logger.info(f"P/L total calculado: {self.total_profit_loss}")
+            
+        except Exception as e:
+            logger.error(f"Error cargando operaciones desde la base de datos: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+    def _load_trades_from_database(self):
+        """Cargar operaciones desde la base de datos a las estructuras en memoria"""
+        logger.info("Cargando operaciones desde la base de datos")
+        try:
+            if not hasattr(self, 'db') or self.db is None:
+                logger.error("No database connection available for loading trades")
+                return
+                
+            # Determinar si estamos en modo simulación
+            is_simulation = hasattr(self.config, 'simulation_mode') and self.config.simulation_mode
+            
+            # Cargar operaciones abiertas
+            open_trades_list = self.db.get_open_trades(is_simulation=is_simulation)
+            logger.info(f"Cargadas {len(open_trades_list)} operaciones abiertas desde la base de datos")
+            
+            # Convertir a diccionario para compatibilidad con el código existente
+            self.open_trades = {}
+            for trade in open_trades_list:
+                # Crear clave única para el diccionario
+                trade_key = f"{trade['symbol']}_{trade['id']}"
+                
+                # Convertir campos de la base de datos al formato esperado por el código existente
+                formatted_trade = {
+                    'symbol': trade['symbol'],
+                    'side': trade['side'],
+                    'quantity': trade['quantity'],
+                    'entry_price': trade['entry_price'],
+                    'stop_loss': trade['stop_loss'],
+                    'take_profit': trade['take_profit'],
+                    'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
+                    'order_id': trade['order_id'],
+                    'strategy_type': trade['strategy_type'],
+                    'db_id': trade['id']
+                }
+                
+                # Añadir campos opcionales si existen
+                if 'profit_loss' in trade and trade['profit_loss'] is not None:
+                    formatted_trade['profit_loss'] = trade['profit_loss']
+                if 'confidence' in trade and trade['confidence'] is not None:
+                    formatted_trade['confidence'] = trade['confidence']
+                if 'model_used' in trade and trade['model_used'] is not None:
+                    formatted_trade['model_used'] = trade['model_used']
+                
+                self.open_trades[trade_key] = formatted_trade
+            
+            # Cargar historial de operaciones cerradas
+            closed_trades_list = self.db.get_trades_history(is_simulation=is_simulation)
+            logger.info(f"Cargadas {len(closed_trades_list)} operaciones cerradas desde la base de datos")
+            
+            # Convertir a lista para compatibilidad con el código existente
+            self.trades_history = []
+            for trade in closed_trades_list:
+                # Convertir campos de la base de datos al formato esperado por el código existente
+                formatted_trade = {
+                    'symbol': trade['symbol'],
+                    'side': trade['side'],
+                    'quantity': trade['quantity'],
+                    'entry_price': trade['entry_price'],
+                    'exit_price': trade['exit_price'],
+                    'stop_loss': trade['stop_loss'] if 'stop_loss' in trade else None,
+                    'take_profit': trade['take_profit'] if 'take_profit' in trade else None,
+                    'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
+                    'time_closed': datetime.fromisoformat(trade['exit_time']) if isinstance(trade['exit_time'], str) else trade['exit_time'],
+                    'order_id': trade['order_id'] if 'order_id' in trade else None,
+                    'strategy_type': trade['strategy_type'],
+                    'profit_loss': trade['profit_loss'],
+                    'reason': trade['exit_reason'] if 'exit_reason' in trade else 'unknown'
+                }
+                
+                # Añadir campos opcionales si existen
+                if 'confidence' in trade and trade['confidence'] is not None:
+                    formatted_trade['confidence'] = trade['confidence']
+                if 'model_used' in trade and trade['model_used'] is not None:
+                    formatted_trade['model_used'] = trade['model_used']
+                
+                self.trades_history.append(formatted_trade)
+            
+            # Calcular P/L total
+            self.total_profit_loss = sum(t.get('profit_loss', 0) for t in self.trades_history)
+            logger.info(f"P/L total calculado: {self.total_profit_loss}")
+            
+        except Exception as e:
+            logger.error(f"Error cargando operaciones desde la base de datos: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def get_performance_summary(self):
         """Obtener resumen de rendimiento para la TUI"""
@@ -525,6 +853,20 @@ class ScalpingBot:
             if quantity <= 0:
                 logger.warning(f"Calculated quantity is zero or negative for {symbol}")
                 return
+                
+            # Verificar que tenemos fondos suficientes para la operación (importante para modo spot)
+            required_funds = quantity * entry_price
+            if required_funds > quote_balance:
+                logger.warning(f"Fondos insuficientes para {symbol}: {required_funds} {quote_asset} requeridos, {quote_balance} {quote_asset} disponibles")
+                # Ajustar cantidad a los fondos disponibles (con un pequeño margen de seguridad del 1%)
+                available_funds = quote_balance * 0.99  # 1% de margen para comisiones
+                quantity = available_funds / entry_price
+                logger.info(f"Ajustando cantidad a {quantity} basado en fondos disponibles")
+                
+                # Verificar si la cantidad ajustada es suficiente para operar
+                if quantity <= 0 or quantity < self.config.min_trade_quantity:
+                    logger.warning(f"Cantidad ajustada demasiado pequeña para operar: {quantity}")
+                    return
             
             # Execute the order with stop loss and take profit
             order_result = self.binance_client.create_order_with_sl_tp(
@@ -595,8 +937,18 @@ class ScalpingBot:
                 if not current_price:
                     continue
                 
-                # Check if stop loss or take profit hit
+                # Update P/L for all open trades even if not closing them
                 side = trade['side']
+                entry_price = trade['entry_price']
+                quantity = trade['quantity']
+                
+                # Calculate current P/L based on latest price
+                if side == 'BUY':
+                    trade['profit_loss'] = (current_price - entry_price) * quantity
+                else:  # SELL
+                    trade['profit_loss'] = (entry_price - current_price) * quantity
+                
+                # Check if stop loss or take profit hit
                 stop_loss = trade['stop_loss']
                 take_profit = trade['take_profit']
                 

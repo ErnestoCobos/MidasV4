@@ -39,6 +39,40 @@ class RiskManager:
         self.current_exposure = 0.0
         self.symbol_exposures = {}  # symbol -> exposure_amount
     
+    def calculate_dynamic_stop_loss(self, symbol: str, entry_price: float, direction: str, volatility: float = None) -> float:
+        """
+        Calculate stop loss dynamically based on volatility and market regime
+        
+        Args:
+            symbol: Trading symbol
+            entry_price: Entry price
+            direction: Trade direction (BUY/SELL)
+            volatility: Volatility measurement (optional)
+            
+        Returns:
+            Stop loss price
+        """
+        if volatility is None:
+            volatility = getattr(self.config, 'default_volatility', 0.01)
+            
+        # Get stop loss percentage from config (as multiplier)
+        base_sl_pct = getattr(self.config, 'base_stop_loss_pct', 1.0) / 100
+        
+        # Adjust stop based on volatility - higher volatility = wider stop
+        # but with reasonable limits
+        stop_multiplier = max(0.5, min(2.5, volatility / 0.01))
+        adjusted_sl_pct = base_sl_pct * stop_multiplier
+        
+        # Make sure it doesn't exceed the max
+        max_sl_pct = getattr(self.config, 'max_stop_loss_pct', 2.0) / 100
+        stop_pct = min(adjusted_sl_pct, max_sl_pct)
+        
+        # Calculate price based on direction
+        if direction == 'BUY':
+            return entry_price * (1 - stop_pct)
+        else:  # SELL
+            return entry_price * (1 + stop_pct)
+    
     def calculate_position_size(self, 
                                total_capital: float,
                                symbol: str, 
@@ -125,6 +159,26 @@ class RiskManager:
         if symbol in self.open_positions:
             self.logger.info(f"Already have an open position for {symbol}")
             return False
+        
+        # Verificación específica para operaciones spot: asegurar fondos suficientes
+        if hasattr(self.config, 'enforce_spot_balance') and self.config.enforce_spot_balance:
+            # Asegurarnos de que hay suficiente capital para abrir la posición
+            quote_asset = symbol[3:]  # e.g., 'USDT' from 'BTCUSDT'
+            
+            # Aplicar margen de seguridad para comisiones si está configurado
+            safety_margin = 1.0
+            if hasattr(self.config, 'safety_margin_pct'):
+                safety_margin = 1.0 + (self.config.safety_margin_pct / 100)
+            
+            # Calcular fondos requeridos con margen de seguridad
+            required_funds = position_value * safety_margin
+            
+            if required_funds > total_capital:
+                self.logger.info(
+                    f"Fondos insuficientes para {symbol}: {required_funds:.2f} {quote_asset} requeridos, "
+                    f"{total_capital:.2f} {quote_asset} disponibles"
+                )
+                return False
         
         # Check maximum total exposure
         max_total_exposure = total_capital * (self.max_exposure_pct / 100)
