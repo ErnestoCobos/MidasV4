@@ -1,10 +1,11 @@
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, ContentSwitcher
 from textual.containers import Container
+import time
 
-from .components.panels import StatusPanel
+from .components.panels import StatusPanel, PricesPanel, OpenTradesPanel, HistoryPanel, StatsPanel
 from .components.views import DashboardView, PricesView, TradesView, StatsView, ConfigView
-from .components.charts import MultiChart
+from .components.charts import MultiChart, AsciiChart
 
 class TradingBotApp(App):
     """Aplicación TUI para el Midas Scalping Bot."""
@@ -57,8 +58,15 @@ class TradingBotApp(App):
         # Vista inicial
         switcher.current = "dashboard"
         
-        # Iniciar actualización periódica
-        self.set_interval(1.0, self.refresh_data)
+        # Iniciar actualización periódica - más rápido para el modo simulación
+        refresh_interval = 0.5  # Intervalo más rápido por defecto
+        if hasattr(self.bot, 'binance_client') and hasattr(self.bot.binance_client, 'simulation_mode'):
+            if not self.bot.binance_client.simulation_mode:
+                refresh_interval = 1.0  # Intervalo estándar para modo real
+        self.set_interval(refresh_interval, self.refresh_data)
+        
+        # Inicializar manualmente todas las tablas y paneles
+        self.initialize_all_panels()
         
     def refresh_data(self):
         """Actualizar datos periódicamente."""
@@ -72,29 +80,35 @@ class TradingBotApp(App):
             for panel in self.query(PricesPanel):
                 try:
                     panel.refresh_prices()
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Registrar el error con detalles
+                    print(f"Error al actualizar panel de precios: {str(e)}")
             
             # Actualizar operaciones abiertas
             for panel in self.query(OpenTradesPanel):
                 try:
                     panel.refresh_trades()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error al actualizar operaciones abiertas: {str(e)}")
             
             # Actualizar historial de operaciones
             for panel in self.query(HistoryPanel):
                 try:
                     panel.refresh_history()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error al actualizar historial: {str(e)}")
+                    
+            # Verificar que los paneles tengan datos
+            if self.query(HistoryPanel) and len(self.query(HistoryPanel)) > 0:
+                history_panel = list(self.query(HistoryPanel))[0]
+                print(f"Panel de historial tiene {history_panel.row_count} filas")
             
             # Actualizar gráficos
             for chart_container in self.query(MultiChart):
                 try:
                     chart_container.update_charts()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error al actualizar gráficos: {str(e)}")
             
             # Actualizar estadísticas si esa vista está activa
             try:
@@ -103,19 +117,73 @@ class TradingBotApp(App):
                     for panel in self.query(StatsPanel):
                         try:
                             panel.update_stats()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-        except Exception:
-            # Ignorar cualquier error durante la actualización
-            pass
+                        except Exception as e:
+                            print(f"Error al actualizar estadísticas: {str(e)}")
+            except Exception as e:
+                print(f"Error al obtener content_switcher: {str(e)}")
+                
+        except Exception as e:
+            # Registrar el error global
+            print(f"Error general en refresh_data: {str(e)}")
     
     def action_switch_view(self, view_name: str):
         """Cambiar la vista actual."""
         switcher = self.query_one(ContentSwitcher)
         switcher.current = view_name
     
+    def initialize_all_panels(self):
+        """Inicializar manualmente todos los paneles y tablas"""
+        try:
+            # Dar tiempo a que se monten todos los widgets
+            time.sleep(0.5)
+            
+            # Inicializar tablas de precios
+            for panel in self.query(PricesPanel):
+                try:
+                    panel._initialize_rows()
+                    self.notify("Tabla de precios inicializada")
+                except Exception as e:
+                    print(f"Error inicializando tabla de precios: {str(e)}")
+                
+            # Inicializar tablas de operaciones abiertas
+            for panel in self.query(OpenTradesPanel):
+                try:
+                    panel._initialize_rows()
+                    self.notify("Tabla de operaciones abiertas inicializada")
+                except Exception as e:
+                    print(f"Error inicializando tabla de operaciones abiertas: {str(e)}")
+                
+            # Inicializar tablas de historial - Importante
+            for i, panel in enumerate(self.query(HistoryPanel)):
+                try:
+                    print(f"Inicializando panel de historial #{i}")
+                    panel._initialize_rows()
+                    self.notify(f"Tabla de historial inicializada con {panel.row_count} filas")
+                    print(f"Inicializado con {panel.row_count} filas")
+                except Exception as e:
+                    print(f"Error inicializando tabla de historial: {str(e)}")
+                
+            # Actualizar estadísticas
+            for panel in self.query(StatsPanel):
+                try:
+                    panel.update_stats()
+                except Exception as e:
+                    print(f"Error actualizando estadísticas: {str(e)}")
+                
+            # Actualizar gráficos
+            for chart in self.query(AsciiChart):
+                try:
+                    chart.update_chart()
+                except Exception as e:
+                    print(f"Error actualizando gráfico: {str(e)}")
+            
+            # Forzar la actualización de todas las vistas
+            self.refresh_data()
+                
+        except Exception as e:
+            # Registrar errores durante la inicialización
+            print(f"Error general inicializando paneles: {str(e)}")
+            
     def action_toggle_bot(self):
         """Iniciar o detener el bot."""
         if hasattr(self.bot, 'active'):

@@ -38,6 +38,18 @@ Screen {
     width: 100%;
 }
 
+.section-title {
+    background: #0d1117;
+    color: #58a6ff;
+    text-align: center;
+    padding: 0 1;
+    text-style: bold;
+    height: 1;
+    width: 100%;
+    margin-bottom: 1;
+    border-bottom: solid #30363d;
+}
+
 /* Estilos para las tablas de datos */
 DataTable {
     width: 100%;
@@ -71,6 +83,11 @@ PricesPanel, OpenTradesPanel, HistoryPanel {
     width: 100%;
 }
 
+.compact-history {
+    max-height: 20vh;
+    min-height: 7;
+}
+
 StatsPanel {
     margin: 1 0;
     padding: 1;
@@ -78,6 +95,20 @@ StatsPanel {
     border: round #30363d;
     height: auto;
     width: 100%;
+}
+
+.compact-stats {
+    min-height: 1;
+    max-height: 3;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    background: #21262d;
+    border: solid #30363d;
+}
+
+.dashboard-panel {
+    margin: 0 1 1 0;
+    height: auto;
 }
 
 /* Configuración de layout para vista principal */
@@ -122,6 +153,16 @@ MultiChart {
 Horizontal {
     height: auto;
     width: 100%;
+}
+
+/* Elementos de control */
+.controls {
+    background: #21262d;
+    color: #58a6ff;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    text-align: center;
+    border: solid #30363d;
 }
 
 /* Notificaciones */

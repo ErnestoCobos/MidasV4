@@ -11,13 +11,15 @@ import sys
 import logging
 from typing import Dict, Any
 
-# Configurar logging
+# Configurar logging - solo a archivo para evitar interferir con la TUI
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("tui.log"),
-        logging.StreamHandler()
+        logging.FileHandler("logs/tui.log"),
     ]
 )
 logger = logging.getLogger('TUI')
@@ -117,6 +119,9 @@ def setup_bot(args: argparse.Namespace) -> Any:
         
         # Inicializar bot
         bot = ScalpingBot(config)
+        # Agregar referencia del bot al binance_client para sincronizar P/L
+        if hasattr(bot, 'binance_client'):
+            bot.binance_client.bot = bot
         logger.info("Bot inicializado correctamente")
         return bot
         
@@ -132,15 +137,69 @@ def main():
         # Parsear argumentos
         args = parse_arguments()
         
+        # Agregar flag para debug
+        debug_mode = "--debug" in sys.argv
+        
         # Configurar bot
         bot = setup_bot(args)
+        
+        # Asegurarse de que el historial de operaciones se inicializa correctamente
+        logger.info(f"Bot inicializado con {len(bot.trades_history)} operaciones en historial")
+        logger.info(f"Bot inicializado con {len(bot.open_trades)} operaciones abiertas")
+        
+        # Si no hay operaciones en el historial, imprimir advertencia
+        if len(bot.trades_history) == 0:
+            logger.warning("No hay operaciones en el historial del bot")
+        
+        # Configurar el logging para Textual
+        from textual.logging import TextualHandler
+        
+        # Crear directorio de logs si no existe
+        logs_dir = 'logs'
+        if not os.path.exists(logs_dir):
+            os.makedirs(logs_dir)
+            
+        # Configurar logging de Textual solo a archivo, pero no afectar el resto del sistema
+        textual_log_path = os.path.join(logs_dir, 'textual.log')
+        
+        # Configurar TextualHandler específicamente para logs de Textual
+        textual_logger = logging.getLogger("textual")
+        textual_logger.handlers = []  # Limpiar handlers existentes
+        
+        # Añadir manejador de archivo para todos los logs de Textual
+        textual_file_handler = logging.FileHandler(textual_log_path)
+        textual_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        textual_logger.addHandler(textual_file_handler)
+        textual_logger.propagate = False
+        
+        # NO eliminar los handlers de root logger, solo configurar para que escriban a archivo
+        root_logger = logging.getLogger()
+        
+        # Remover StreamHandlers para evitar la salida a consola, mantener otros tipos
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                root_logger.removeHandler(handler)
+        
+        # Añadir un FileHandler al root logger
+        root_file_handler = logging.FileHandler(os.path.join(logs_dir, 'app.log'))
+        root_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        root_logger.addHandler(root_file_handler)
         
         # Importar e iniciar TUI
         from tui import TradingBotApp
         
-        # Iniciar la app TUI
+        # Verificar que el historial de operaciones esté correcto
+        if hasattr(bot, 'trades_history'):
+            print(f"Bot tiene {len(bot.trades_history)} operaciones en historial")
+            for i, trade in enumerate(bot.trades_history):
+                print(f"Trade #{i}: {trade['symbol']} - P/L: {trade.get('profit_loss', 'N/A')}")
+        
+        # Iniciar la app TUI sin especificar log (no soportado en esta versión)
         app = TradingBotApp(bot)
-        app.run()
+        if debug_mode:
+            app.run(debug=True)
+        else:
+            app.run()
         
     except KeyboardInterrupt:
         logger.info("Interrumpido por el usuario")

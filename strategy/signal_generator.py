@@ -186,6 +186,23 @@ class SignalGenerator:
                 # Only trigger if profit exists
                 if current_price < entry_price:
                     return True, 'ma_crossover'
+                    
+        # Check for trend change using ADX if available
+        if 'adx' in indicators and 'adx_direction' in indicators:
+            adx = indicators['adx']
+            adx_direction = indicators['adx_direction']
+            
+            # Strong trend (ADX > 25) in opposite direction of our position
+            if adx > 25:
+                if side == 'BUY' and adx_direction < 0:  # Strong downtrend
+                    # Close if we are in profit, or ADX is very strong (>35)
+                    if current_price > entry_price or adx > 35:
+                        return True, 'trend_reversal'
+                        
+                elif side == 'SELL' and adx_direction > 0:  # Strong uptrend
+                    # Close if we are in profit, or ADX is very strong (>35)
+                    if current_price < entry_price or adx > 35:
+                        return True, 'trend_reversal'
         
         # Default - don't close
         return False, None

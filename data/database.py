@@ -126,8 +126,26 @@ class SQLiteManager(DatabaseManager):
                 confidence REAL,
                 model_used TEXT,
                 exit_reason TEXT,
-                status TEXT DEFAULT 'open'
+                status TEXT DEFAULT 'open',
+                is_simulation INTEGER DEFAULT 0,
+                order_id TEXT
             )
+            ''')
+            
+            # Índice para trades
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_trades_symbol_time 
+            ON trades (symbol, entry_time)
+            ''')
+            
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_trades_status 
+            ON trades (status)
+            ''')
+            
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_trades_is_simulation 
+            ON trades (is_simulation)
             ''')
             
             # Tabla models
@@ -258,12 +276,15 @@ class SQLiteManager(DatabaseManager):
             if exit_time and isinstance(exit_time, datetime):
                 exit_time = exit_time.isoformat()
                 
+            # Determinar si es una operación simulada
+            is_simulation = trade_data.get('is_simulation', 0)
+            
             query = '''
             INSERT INTO trades 
             (symbol, entry_time, exit_time, side, entry_price, exit_price, 
              quantity, profit_loss, strategy_type, confidence, model_used, 
-             exit_reason, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             exit_reason, status, is_simulation, order_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
             
             cursor.execute(query, (
@@ -272,7 +293,7 @@ class SQLiteManager(DatabaseManager):
                 trade_data['quantity'], trade_data.get('profit_loss'),
                 trade_data.get('strategy_type', 'unknown'), trade_data.get('confidence'),
                 trade_data.get('model_used'), trade_data.get('exit_reason'),
-                trade_data.get('status', 'open')
+                trade_data.get('status', 'open'), is_simulation, trade_data.get('order_id')
             ))
             
             self.conn.commit()
@@ -471,20 +492,25 @@ class SQLiteManager(DatabaseManager):
         finally:
             cursor.close()
     
-    def get_open_trades(self, symbol=None):
+    def get_open_trades(self, symbol=None, is_simulation=None):
         """Obtener todas las operaciones abiertas"""
         if not self.conn:
             self._connect()
             
         cursor = self.conn.cursor()
         try:
+            params = []
+            query = "SELECT * FROM trades WHERE status = 'open'"
+            
             if symbol:
-                query = "SELECT * FROM trades WHERE status = 'open' AND symbol = ?"
-                cursor.execute(query, (symbol,))
-            else:
-                query = "SELECT * FROM trades WHERE status = 'open'"
-                cursor.execute(query)
+                query += " AND symbol = ?"
+                params.append(symbol)
                 
+            if is_simulation is not None:
+                query += " AND is_simulation = ?"
+                params.append(1 if is_simulation else 0)
+                
+            cursor.execute(query, params)
             results = cursor.fetchall()
             return [dict(row) for row in results]
             
@@ -494,24 +520,28 @@ class SQLiteManager(DatabaseManager):
         finally:
             cursor.close()
     
-    def get_recent_trades(self, limit=100, symbol=None):
+    def get_recent_trades(self, limit=100, symbol=None, is_simulation=None):
         """Obtener operaciones recientes"""
         if not self.conn:
             self._connect()
             
         cursor = self.conn.cursor()
         try:
+            params = []
+            query = "SELECT * FROM trades WHERE 1=1"
+            
             if symbol:
-                query = """
-                SELECT * FROM trades 
-                WHERE symbol = ? 
-                ORDER BY entry_time DESC LIMIT ?
-                """
-                cursor.execute(query, (symbol, limit))
-            else:
-                query = "SELECT * FROM trades ORDER BY entry_time DESC LIMIT ?"
-                cursor.execute(query, (limit,))
+                query += " AND symbol = ?"
+                params.append(symbol)
                 
+            if is_simulation is not None:
+                query += " AND is_simulation = ?"
+                params.append(1 if is_simulation else 0)
+                
+            query += " ORDER BY entry_time DESC LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(query, params)
             results = cursor.fetchall()
             return [dict(row) for row in results]
             
@@ -520,3 +550,38 @@ class SQLiteManager(DatabaseManager):
             return []
         finally:
             cursor.close()
+            
+    def get_closed_trades(self, limit=100, symbol=None, is_simulation=None):
+        """Obtener operaciones cerradas"""
+        if not self.conn:
+            self._connect()
+            
+        cursor = self.conn.cursor()
+        try:
+            params = []
+            query = "SELECT * FROM trades WHERE status = 'closed'"
+            
+            if symbol:
+                query += " AND symbol = ?"
+                params.append(symbol)
+                
+            if is_simulation is not None:
+                query += " AND is_simulation = ?"
+                params.append(1 if is_simulation else 0)
+                
+            query += " ORDER BY exit_time DESC LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+            return [dict(row) for row in results]
+            
+        except Exception as e:
+            self.logger.error(f"Error getting closed trades: {str(e)}")
+            return []
+        finally:
+            cursor.close()
+            
+    def get_trades_history(self, is_simulation=None):
+        """Obtener historial completo de operaciones cerradas"""
+        return self.get_closed_trades(limit=1000, is_simulation=is_simulation)

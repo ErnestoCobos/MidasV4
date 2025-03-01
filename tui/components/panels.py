@@ -17,16 +17,46 @@ class StatusPanel(Static):
         else:
             modo = "Desconocido"
         
-        # Intentar obtener el balance
-        balance = "N/A"
+        # Obtener balance total
+        balance_text = "N/A"
         if hasattr(bot, 'get_balance'):
             try:
-                balance = bot.get_balance()
-                balance = f"{balance:.2f} USDT"
-            except:
-                pass
+                total_balance = bot.get_balance()
+                
+                # Mostrar balance con colores según ganancia/pérdida
+                initial_balance = 1000.0  # Asumimos 1000 USDT como balance inicial
+                if hasattr(bot, 'config') and hasattr(bot.config, 'sim_initial_balance'):
+                    initial_balance = bot.config.sim_initial_balance.get('USDT', 1000.0)
+                
+                profit_loss = total_balance - initial_balance
+                change_percent = (profit_loss / initial_balance) * 100 if initial_balance > 0 else 0
+                
+                # Formatear el balance total
+                balance_text = f"{total_balance:.2f} USDT"
+                
+                # Obtener balances detallados si están disponibles
+                if hasattr(bot, 'get_detailed_balances'):
+                    try:
+                        detailed_balances = bot.get_detailed_balances()
+                        detailed_text = " ("
+                        for asset, amount in detailed_balances.items():
+                            if asset != 'USDT' and amount > 0:
+                                detailed_text += f"{asset}: {amount:.4f}, "
+                        
+                        if detailed_text != " (":
+                            balance_text += detailed_text.rstrip(", ") + ")"
+                            
+                        # Añadir cambio porcentual
+                        if change_percent != 0:
+                            balance_text += f" | Δ {change_percent:.2f}%"
+                    except Exception as e:
+                        print(f"Error al obtener balances detallados: {str(e)}")
+            except Exception as e:
+                print(f"Error al obtener balance total: {str(e)}")
         
-        text = f"Estado: {estado} | Modo: {modo} | Balance: {balance}"
+        # Generar texto del panel
+        text = f"Estado: {estado} | Modo: {modo} | Balance: {balance_text}"
+        
         self.update(text)  # actualiza el texto mostrado en el widget
 
 # Panel de precios en vivo
@@ -138,6 +168,7 @@ class OpenTradesPanel(DataTable):
         """Actualizar operaciones abiertas"""
         # Verificar si bot tiene open_trades
         if not hasattr(self.app.bot, 'open_trades'):
+            print("Bot doesn't have open_trades attribute")
             return
             
         try:
@@ -154,8 +185,8 @@ class OpenTradesPanel(DataTable):
                 if trade_id_str not in row_keys:  # si no existe fila, agregar nueva
                     try:
                         self._add_trade_row(trade_id, trade)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"Error adding trade row {trade_id}: {str(e)}")
                 else:
                     # Si ya existe, actualizar P/L y otros campos que puedan cambiar
                     try:
@@ -170,19 +201,21 @@ class OpenTradesPanel(DataTable):
                         tp = trade.get("take_profit", 0.0)
                         self.update_cell(trade_id_str, "SL", f"{sl:.8f}")
                         self.update_cell(trade_id_str, "TP", f"{tp:.8f}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"Error updating trade row {trade_id}: {str(e)}")
             
             # Eliminar filas de trades que ya no están abiertos (cerrados)
             for row_key in row_keys:
                 if row_key not in map(str, bot_trades.keys()):
                     try:
                         self.remove_row(row_key)
-                    except Exception:
-                        pass
-        except Exception:
-            # Ignorar errores generales durante la actualización
-            pass
+                    except Exception as e:
+                        print(f"Error removing trade row {row_key}: {str(e)}")
+        except Exception as e:
+            # Registrar errores generales durante la actualización
+            print(f"Error refreshing trades panel: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
 
 # Panel de historial de operaciones cerradas
 class HistoryPanel(DataTable):
@@ -197,14 +230,25 @@ class HistoryPanel(DataTable):
         # Inicializar con datos existentes
         self._initialize_rows()
     
-    def _initialize_rows(self):
-        """Añadir filas iniciales del historial de operaciones"""
+    def _initialize_rows(self, max_rows=None):
+        """Añadir filas iniciales del historial de operaciones
+        
+        Args:
+            max_rows: Opcional, número máximo de filas a mostrar (más recientes primero)
+        """
         if hasattr(self.app.bot, 'trades_history'):
-            for index, trade in enumerate(self.app.bot.trades_history):
+            # Si se especifica max_rows, tomar solo las últimas N operaciones
+            trades_to_show = self.app.bot.trades_history
+            if max_rows is not None and max_rows > 0:
+                trades_to_show = trades_to_show[-max_rows:]
+                
+            # Inicializar filas
+            for index, trade in enumerate(trades_to_show):
                 try:
                     self._add_history_row(trade, index)
-                except Exception:
-                    # Ignorar errores al agregar filas iniciales
+                except Exception as e:
+                    # Registrar errores al agregar filas iniciales
+                    print(f"Error al agregar fila de historial {index}: {str(e)}")
                     pass
     
     def _add_history_row(self, trade, row_id=None):
@@ -243,24 +287,36 @@ class HistoryPanel(DataTable):
         """Actualizar historial de operaciones cerradas"""
         # Verificar si el bot tiene trades_history
         if not hasattr(self.app.bot, 'trades_history'):
+            print("El bot no tiene trades_history")
             return
         
         try:
             # Contar trades actuales en la tabla
             current_count = self.row_count
+            bot_trades_count = len(self.app.bot.trades_history)
             
+            print(f"Historial: {current_count} filas en tabla, {bot_trades_count} trades en el bot")
+            
+            # Si la tabla está vacía pero hay datos en el bot, recrear todas las filas
+            if current_count == 0 and bot_trades_count > 0:
+                print("Reinicializando todas las filas del historial")
+                self._initialize_rows()
+                return
+                
             # Verificar si hay trades nuevos para añadir
-            if len(self.app.bot.trades_history) > current_count:
+            if bot_trades_count > current_count:
                 new_trades = self.app.bot.trades_history[current_count:]
+                print(f"Añadiendo {len(new_trades)} nuevos trades al historial")
+                
                 for i, trade in enumerate(new_trades):
                     try:
                         self._add_history_row(trade, current_count + i)
-                    except Exception:
-                        # Ignorar errores al añadir nuevas filas
-                        pass
-        except Exception:
-            # Ignorar errores generales durante la actualización
-            pass
+                    except Exception as e:
+                        # Registrar errores al añadir filas
+                        print(f"Error añadiendo fila de historial: {str(e)}")
+        except Exception as e:
+            # Registrar errores durante la actualización
+            print(f"Error refrescando historial: {str(e)}")
 
 # Panel de estadísticas de rendimiento
 class StatsPanel(Static):
@@ -274,15 +330,78 @@ class StatsPanel(Static):
             
             win_rate = stats.get("win_rate", 0) * 100  # porcentaje
             total_pl = stats.get("total_profit_loss", 0)
-            avg_win = stats.get("avg_win", 0)
+            # Corregir nombres de campos para coincidir con los que devuelve el bot
+            avg_win = stats.get("avg_profit", 0)  # Nombre correcto en el bot
             avg_loss = stats.get("avg_loss", 0)
+            total_trades = stats.get('total_trades', 0)
+            open_trades = stats.get('open_trades', 0)
+            profitable_trades = stats.get('profitable_trades', 0)
             
-            text = (f"📊 Win Rate: {win_rate:.1f}%\n"
-                    f"💰 P/L Total: {total_pl:.8f} USDT\n"
-                    f"📈 Ganancia Promedio: {avg_win:.8f} | 📉 Pérdida Promedio: {avg_loss:.8f}\n"
-                    f"🔄 Trades totales: {stats.get('total_trades', 0)}\n"
-                    f"✅ Trades ganadores: {stats.get('profitable_trades', 0)}")
+            # Debug para verificar campos
+            print(f"Stats disponibles: {', '.join(stats.keys())}")
+            print(f"Ganancias promedio: {avg_win}, Pérdidas promedio: {avg_loss}")
             
+            # Verificar si estamos en modo compacto (para dashboard)
+            is_compact = "compact-stats" in self.classes
+            
+            if is_compact:
+                # Versión compacta para panel de dashboard
+                text = (f"💰 P/L Total: {'∆' if total_pl >= 0 else '∇'}{total_pl:.2f} USDT | "
+                        f"📊 Win Rate: {win_rate:.1f}% | "
+                        f"🔄 Trades: {total_trades} ({open_trades} abiertos)")
+            else:
+                # Versión completa para vista de estadísticas
+                profit_factor = stats.get('profit_factor', 0)
+                trades_per_hour = stats.get('trades_per_hour', 0)
+                best_symbols = stats.get('best_symbols', [])
+                active_since = stats.get('active_since', 'N/A')
+                
+                # Formatear estadísticas detalladas con manejo mejorado de números
+                try:
+                    win_rate_fmt = f"{win_rate:.1f}%" if win_rate else "N/A"
+                    total_pl_fmt = f"{total_pl:.4f} USDT" if total_pl != 0 else "0.0000 USDT"
+                    avg_win_fmt = f"{avg_win:.5f}" if avg_win else "0.00000"
+                    avg_loss_fmt = f"{avg_loss:.5f}" if avg_loss else "0.00000"
+                    profit_factor_fmt = f"{profit_factor:.2f}" if profit_factor else "N/A"
+                    trades_per_hour_fmt = f"{trades_per_hour:.2f}" if trades_per_hour else "0.00"
+                    
+                    text = (f"📊 Win Rate: {win_rate_fmt}\n"
+                            f"💰 P/L Total: {total_pl_fmt}\n"
+                            f"📈 Ganancia Promedio: {avg_win_fmt} | 📉 Pérdida Promedio: {avg_loss_fmt}\n"
+                            f"📊 Factor de Beneficio: {profit_factor_fmt}\n"
+                            f"🔄 Trades: {total_trades} totales | {profitable_trades} ganadores | {open_trades} abiertos\n"
+                            f"⏱️ Frecuencia: {trades_per_hour_fmt} trades/hora\n\n"
+                            f"🏆 Mejores pares:")
+                except Exception as fmt_error:
+                    print(f"Error formateando estadísticas: {str(fmt_error)}")
+                    # Formato más simple como fallback
+                    text = (f"📊 Win Rate: {win_rate}\n"
+                            f"💰 P/L Total: {total_pl}\n"
+                            f"📈 Ganancia Promedio: {avg_win} | 📉 Pérdida Promedio: {avg_loss}\n"
+                            f"🔄 Trades: {total_trades} totales")
+                
+                # Solo añadir mejores símbolos si no estamos en el modo de fallback
+                if "Factor de Beneficio" in text and best_symbols:
+                    try:
+                        for i, symbol_data in enumerate(best_symbols):
+                            symbol = symbol_data.get('symbol', 'N/A')
+                            profit = symbol_data.get('profit', 0)
+                            trades = symbol_data.get('trades', 0)
+                            text += f"\n{'  ' if i > 0 else ''}{symbol}: {profit:.5f} USDT ({trades} trades)"
+                    except Exception as symbol_err:
+                        print(f"Error al formatear mejores pares: {str(symbol_err)}")
+                        text += " No se pudieron mostrar"
+                elif "Factor de Beneficio" in text:
+                    text += " No hay suficientes datos"
+                
+                # Añadir tiempo activo
+                if "Factor de Beneficio" in text:
+                    try:
+                        text += f"\n\n🕒 Activo desde: {active_since if active_since else 'N/A'}"
+                    except Exception:
+                        pass
+            
+            # Aplicar formato Rich
             self.update(text)
         except Exception as e:
             self.update(f"Error al actualizar estadísticas: {str(e)}")

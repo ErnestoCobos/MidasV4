@@ -31,23 +31,65 @@ class FeatureEngineer:
         stddev = df['close'].rolling(window=20).std()
         df['bb_upper'] = df['bb_middle'] + (2 * stddev)
         df['bb_lower'] = df['bb_middle'] - (2 * stddev)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
         
         # MACD
         df['macd'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
         df['macd_signal'] = df['macd'].ewm(span=9).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
         
-        # Volume indicators
-        df['volume_sma'] = df['volume'].rolling(window=20).mean()
-        df['volume_change'] = df['volume'].pct_change()
-        
         # Volatility
         df['atr'] = (
             df['high'] - df['low']
         ).rolling(window=14).mean()
+        df['volatility_14'] = df['close'].pct_change().rolling(window=14).std() * np.sqrt(14)
+        
+        # Volume indicators
+        df['volume_sma'] = df['volume'].rolling(window=20).mean()
+        df['volume_change'] = df['volume'].pct_change()
+        df['volume_trend'] = df['volume'].diff(10) / df['volume'].rolling(window=10).mean()
+        
+        # Momentum
+        df['momentum'] = df['close'].pct_change(periods=10)
+        df['price_velocity'] = df['close'].diff(5) / 5
+        
+        # ADX - Average Directional Index para fuerza de tendencia
+        self._calculate_adx(df)
+        
+        # Range intensity
+        df['range_intensity'] = df['high'].rolling(10).max() / df['low'].rolling(10).min() - 1
         
         # Drop NaN values
         df = df.dropna()
+        
+        return df
+        
+    def _calculate_adx(self, df, period=14):
+        """Calculate the ADX indicator"""
+        # +DM and -DM
+        df['plus_dm'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
+                                df['high'] - df['high'].shift(1), 0)
+        df['minus_dm'] = np.where((df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
+                                 df['low'].shift(1) - df['low'], 0)
+        
+        # TR (True Range)
+        df['tr'] = np.maximum(df['high'] - df['low'],
+                             np.maximum(abs(df['high'] - df['close'].shift(1)),
+                                       abs(df['low'] - df['close'].shift(1))))
+        
+        # ATR
+        df['atr'] = df['tr'].rolling(window=period).mean()
+        
+        # +DI and -DI
+        df['plus_di'] = 100 * (df['plus_dm'].rolling(window=period).mean() / df['atr'])
+        df['minus_di'] = 100 * (df['minus_dm'].rolling(window=period).mean() / df['atr'])
+        
+        # DX and ADX
+        df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+        df['adx'] = df['dx'].rolling(window=period).mean()
+        
+        # Direction indicator
+        df['adx_direction'] = df['plus_di'] - df['minus_di']
         
         return df
         

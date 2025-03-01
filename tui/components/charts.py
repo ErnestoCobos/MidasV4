@@ -81,13 +81,27 @@ class AsciiChart(Static):
         percent_change = ((self.price_history[-1] - self.price_history[0]) / self.price_history[0]) * 100
         trend_class = "positive" if percent_change >= 0 else "negative"
         
-        # Construir el texto completo
-        header = f"{self.symbol} {trend} [bold {trend_class}]{percent_change:.2f}%[/]"
-        chart_text = "\n".join(chart)
-        footer = f"{price_label_max}\n{chart_text}\n{price_label_min}"
+        # Obtener precio actual formateado
+        current_price_formatted = f"{self.price_history[-1]:.8f}"
         
-        # Actualizar el widget
-        self.update(Panel(footer, title=header, title_align="left"))
+        # Construir el texto completo con más información
+        header = f"{self.symbol} {trend} {percent_change:.2f}%"
+        chart_text = "\n".join(chart)
+        
+        # Añadir etiquetas de precio con precio actual destacado
+        footer = (
+            f"Máx: {price_label_max} | Actual: {current_price_formatted}\n"
+            f"{chart_text}\n"
+            f"Mín: {price_label_min}"
+        )
+        
+        # Actualizar el widget con un panel
+        self.update(Panel(
+            footer, 
+            title=header, 
+            title_align="left",
+            padding=(0, 1)
+        ))
 
 class MultiChart(Horizontal):
     """Widget que muestra múltiples gráficos ASCII en una fila horizontal"""
