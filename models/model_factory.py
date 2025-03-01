@@ -14,7 +14,7 @@ class ModelFactory:
         Create a model instance based on type
         
         Args:
-            model_type: Type of model ('lstm', 'xgboost', or 'ensemble')
+            model_type: Type of model ('lstm', 'xgboost', 'deepscalper', 'rl', 'ensemble')
             config: Configuration object
             
         Returns:
@@ -35,6 +35,11 @@ class ModelFactory:
         elif model_type.lower() == 'xgboost':
             logger.info("Creating XGBoost model")
             return XGBoostModel(config)
+            
+        elif model_type.lower() == 'deepscalper' or model_type.lower() == 'rl':
+            logger.info("Creating reinforcement learning model")
+            from models.deep_scalper import RLTradingModel
+            return RLTradingModel(config)
         
         elif model_type.lower() == 'ensemble':
             # For ensemble, we could create multiple models and combine them

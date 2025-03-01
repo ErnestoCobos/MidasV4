@@ -15,7 +15,7 @@ class ScalpingStrategy:
     Coordinates signal generation, risk management, and trading decisions
     """
     
-    def __init__(self, config, model=None):
+    def __init__(self, config, model=None, binance_client=None):
         self.config = config
         self.model = model
         self.logger = logging.getLogger('ScalpingStrategy')
@@ -24,9 +24,100 @@ class ScalpingStrategy:
         self.signal_generator = SignalGenerator(config)
         self.risk_manager = RiskManager(config)
         self.feature_engineer = FeatureEngineer(config)
+        self.binance_client = binance_client
+        
+        # Initialize regime detector
+        try:
+            from strategy.market_regime import MarketRegimeDetector, MarketRegime
+            self.regime_detector = MarketRegimeDetector(config)
+            self.MarketRegime = MarketRegime
+            self.current_regime = None
+            self.logger.info("Market regime detector initialized successfully")
+        except ImportError:
+            self.logger.warning("Market regime detector not available, falling back to standard strategy")
+            self.regime_detector = None
+            self.current_regime = None
+        
+        # Original parameters backup for regime adaptation
+        self.base_parameters = None
         
         # State variables
         self.last_predictions = {}  # symbol -> prediction
+    
+    def adapt_to_market_regime(self, ohlcv_data: pd.DataFrame) -> Dict[str, Any]:
+        """Adapt strategy parameters based on current market regime"""
+        # Skip if no regime detector available
+        if not hasattr(self, 'regime_detector') or self.regime_detector is None:
+            self.logger.warning("No regime detector available, skipping adaptation")
+            return {'regime': 'UNKNOWN', 'confidence': 0}
+            
+        # Detect current market regime
+        regime_info = self.regime_detector.detect_regime(ohlcv_data)
+        self.current_regime = regime_info['regime']
+        
+        # Store original parameters if not already saved
+        if not self.base_parameters:
+            self.base_parameters = {
+                'confidence_threshold': getattr(self.config, 'confidence_threshold', 0.65),
+                'rsi_oversold': getattr(self.config, 'rsi_oversold', 35),
+                'rsi_overbought': getattr(self.config, 'rsi_overbought', 65),
+                'base_stop_loss_pct': getattr(self.config, 'base_stop_loss_pct', 1.0),
+                'trailing_stop_pct': getattr(self.config, 'trailing_stop_pct', 0.5),
+                'max_risk_per_trade': getattr(self.config, 'max_risk_per_trade', 0.5)
+            }
+        
+        # Adapt parameters based on detected regime
+        if regime_info['regime'] == self.MarketRegime.TRENDING_UP:
+            # In uptrend - more aggressive entries, wider stops
+            self.config.rsi_oversold = max(20, self.base_parameters['rsi_oversold'] - 5)
+            self.config.rsi_overbought = max(75, self.base_parameters['rsi_overbought'] + 5)
+            self.config.trailing_stop_pct = self.base_parameters['trailing_stop_pct'] * 1.5
+            self.config.max_risk_per_trade = min(2.0, self.base_parameters['max_risk_per_trade'] * 1.2)
+            self.config.confidence_threshold = max(0.6, self.base_parameters['confidence_threshold'] * 0.9)
+            
+            self.logger.info(f"Adapted to TRENDING_UP regime: RSI({self.config.rsi_oversold}/{self.config.rsi_overbought}), "
+                           f"trailing_stop({self.config.trailing_stop_pct:.2f}%), risk({self.config.max_risk_per_trade:.2f}%)")
+            
+        elif regime_info['regime'] == self.MarketRegime.TRENDING_DOWN:
+            # In downtrend - focus on shorts, tighter stops on longs
+            self.config.rsi_overbought = min(65, self.base_parameters['rsi_overbought'] - 5)
+            self.config.base_stop_loss_pct = self.base_parameters['base_stop_loss_pct'] * 0.8
+            self.config.max_risk_per_trade = max(0.5, self.base_parameters['max_risk_per_trade'] * 0.8)
+            
+            self.logger.info(f"Adapted to TRENDING_DOWN regime: RSI({self.config.rsi_oversold}/{self.config.rsi_overbought}), "
+                           f"stop_loss({self.config.base_stop_loss_pct:.2f}%), risk({self.config.max_risk_per_trade:.2f}%)")
+            
+        elif regime_info['regime'] == self.MarketRegime.RANGING:
+            # In range - focus on mean reversion
+            self.config.rsi_oversold = max(25, self.base_parameters['rsi_oversold'] + 5)
+            self.config.rsi_overbought = min(75, self.base_parameters['rsi_overbought'] - 5)
+            self.config.base_stop_loss_pct = self.base_parameters['base_stop_loss_pct'] * 0.8
+            self.config.trailing_stop_pct = self.base_parameters['trailing_stop_pct'] * 0.7
+            
+            self.logger.info(f"Adapted to RANGING regime: RSI({self.config.rsi_oversold}/{self.config.rsi_overbought}), "
+                           f"stop_loss({self.config.base_stop_loss_pct:.2f}%), trailing({self.config.trailing_stop_pct:.2f}%)")
+            
+        elif regime_info['regime'] == self.MarketRegime.VOLATILE:
+            # In volatile markets - reduce size, widen stops
+            self.config.base_stop_loss_pct = self.base_parameters['base_stop_loss_pct'] * 1.5
+            self.config.max_risk_per_trade = max(0.5, self.base_parameters['max_risk_per_trade'] * 0.6)
+            self.config.confidence_threshold = min(0.8, self.base_parameters['confidence_threshold'] * 1.2)
+            
+            self.logger.info(f"Adapted to VOLATILE regime: confidence({self.config.confidence_threshold:.2f}), "
+                           f"stop_loss({self.config.base_stop_loss_pct:.2f}%), risk({self.config.max_risk_per_trade:.2f}%)")
+        else:
+            # Reset to base parameters for unknown regime
+            for key, value in self.base_parameters.items():
+                setattr(self.config, key, value)
+                
+            self.logger.info("Reset to base parameters for UNKNOWN regime")
+        
+        return {
+            'regime': regime_info['regime'].name,
+            'confidence': regime_info['confidence'],
+            'volatility': regime_info.get('volatility', 0.0),
+            'trend_strength': regime_info.get('trend_strength', 0.0)
+        }
     
     async def generate_signal(self, symbol: str, features: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -206,6 +297,29 @@ class ScalpingStrategy:
         Returns:
             Signal dictionary
         """
+        # Apply market regime detection if available
+        if hasattr(self, 'regime_detector') and self.regime_detector:
+            try:
+                # Create OHLCV dataframe from indicators if needed
+                try:
+                    # Check if binance_client is available
+                    if hasattr(self, 'binance_client') and self.binance_client and hasattr(self.binance_client, 'get_ohlcv'):
+                        ohlcv_data = self.binance_client.get_ohlcv(symbol, self.config.timeframe, 30)
+                        # Detect market regime and adapt strategy parameters
+                        regime_info = self.adapt_to_market_regime(ohlcv_data)
+                        self.logger.info(f"Market regime for {symbol}: {regime_info['regime']} "
+                                       f"(confidence: {regime_info['confidence']:.1f}%, "
+                                       f"volatility: {regime_info.get('volatility', 0):.4f})")
+                    else:
+                        # Si no hay binance_client, usar los indicadores directamente
+                        ohlcv_data = pd.DataFrame([indicators])
+                        regime_info = self.adapt_to_market_regime(ohlcv_data)
+                        self.logger.info(f"Using indicators directly for market regime detection")
+                except Exception as e:
+                    self.logger.warning(f"Failed to get OHLCV data: {str(e)}")
+            except Exception as e:
+                self.logger.warning(f"Error detecting market regime: {str(e)}")
+        
         # Default: neutral
         signal_type = SignalType.NEUTRAL
         confidence = 0
@@ -330,16 +444,38 @@ class ScalpingStrategy:
                 # Try to get current price
                 entry_price = 0
                 
+            # Protección contra balance cero - guardar un porcentaje mínimo
+            min_reserved_balance_pct = getattr(self.config, 'min_reserved_balance_pct', 10)
+            reserved_balance = account_balance * (min_reserved_balance_pct / 100)
+            usable_balance = account_balance - reserved_balance
+            
+            # No usar un balance negativo o muy bajo
+            if usable_balance < 10:
+                self.logger.warning(f"Balance usable muy bajo: {usable_balance:.2f}. Usando valor mínimo seguro.")
+                usable_balance = 10
+                
             # If stop loss is not provided, calculate it
             if stop_loss is None:
-                # Calculate a 1% stop loss by default (conservative)
+                # Usar un stop loss más conservador para spot (0.7% por defecto)
+                base_stop_loss_pct = getattr(self.config, 'base_stop_loss_pct', 0.7) / 100
                 if direction == "BUY":
-                    stop_loss = entry_price * 0.99
+                    stop_loss = entry_price * (1 - base_stop_loss_pct)
                 else:
-                    stop_loss = entry_price * 1.01
+                    stop_loss = entry_price * (1 + base_stop_loss_pct)
             
-            # Calculate position size based on risk (1% of account by default)
-            risk_amount = account_balance * (self.config.max_risk_per_trade / 100)
+            # Reducir riesgo por operación para mercado spot
+            conservative_risk = getattr(self.config, 'max_risk_per_trade', 0.5) / 100
+            
+            # Aplicar factor de volatilidad
+            volatility_factor = min(1.0, 0.01 / max(0.005, volatility))
+            adjusted_risk = conservative_risk * volatility_factor
+            
+            # Calcular el monto de riesgo considerando el balance usable
+            risk_amount = usable_balance * adjusted_risk
+            
+            # Añadir margen de seguridad para comisiones y slippage (3% por defecto)
+            safety_margin = getattr(self.config, 'safety_margin_pct', 3) / 100
+            risk_amount = risk_amount * (1 - safety_margin)
             
             # Calculate price difference for stop loss
             if direction == "BUY":
@@ -369,7 +505,10 @@ class ScalpingStrategy:
             if quantity < 0.001:
                 quantity = 0.001
                 
-            self.logger.info(f"Calculated position size for {symbol}: {quantity} units at {entry_price}")
+            self.logger.info(
+                f"Calculated position size for {symbol}: {quantity} units at {entry_price} "
+                f"(Risk: {adjusted_risk*100:.2f}%, Reserved: {reserved_balance:.2f})"
+            )
             return quantity
             
         except Exception as e:

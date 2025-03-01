@@ -39,39 +39,6 @@ class RiskManager:
         self.current_exposure = 0.0
         self.symbol_exposures = {}  # symbol -> exposure_amount
     
-    def calculate_dynamic_stop_loss(self, symbol: str, entry_price: float, direction: str, volatility: float = None) -> float:
-        """
-        Calculate stop loss dynamically based on volatility and market regime
-        
-        Args:
-            symbol: Trading symbol
-            entry_price: Entry price
-            direction: Trade direction (BUY/SELL)
-            volatility: Volatility measurement (optional)
-            
-        Returns:
-            Stop loss price
-        """
-        if volatility is None:
-            volatility = getattr(self.config, 'default_volatility', 0.01)
-            
-        # Get stop loss percentage from config (as multiplier)
-        base_sl_pct = getattr(self.config, 'base_stop_loss_pct', 1.0) / 100
-        
-        # Adjust stop based on volatility - higher volatility = wider stop
-        # but with reasonable limits
-        stop_multiplier = max(0.5, min(2.5, volatility / 0.01))
-        adjusted_sl_pct = base_sl_pct * stop_multiplier
-        
-        # Make sure it doesn't exceed the max
-        max_sl_pct = getattr(self.config, 'max_stop_loss_pct', 2.0) / 100
-        stop_pct = min(adjusted_sl_pct, max_sl_pct)
-        
-        # Calculate price based on direction
-        if direction == 'BUY':
-            return entry_price * (1 - stop_pct)
-        else:  # SELL
-            return entry_price * (1 + stop_pct)
     
     def calculate_position_size(self, 
                                total_capital: float,
@@ -173,10 +140,15 @@ class RiskManager:
             # Calcular fondos requeridos con margen de seguridad
             required_funds = position_value * safety_margin
             
-            if required_funds > total_capital:
+            # Garantizar que siempre quede un balance mínimo para evitar llegar a 0
+            min_reserved_balance = getattr(self.config, 'min_reserved_balance_pct', 10) / 100
+            min_balance = total_capital * min_reserved_balance
+            available_capital = total_capital - min_balance
+            
+            if required_funds > available_capital:
                 self.logger.info(
                     f"Fondos insuficientes para {symbol}: {required_funds:.2f} {quote_asset} requeridos, "
-                    f"{total_capital:.2f} {quote_asset} disponibles"
+                    f"{available_capital:.2f} {quote_asset} disponibles (reserva mínima: {min_balance:.2f})"
                 )
                 return False
         
