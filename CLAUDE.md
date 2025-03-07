@@ -20,7 +20,7 @@
 - **Risk Management**: `--max-risk`, `--stop-loss`, `--take-profit`, `--trailing-stop`, `--max-daily-loss-pct`, `--max-daily-trades`
 - **Exchange**: `--testnet`, `--simulate`, `--real-data`, `--sim-balance`
 - **Model**: `--model`, `--confidence-threshold`, `--use-gpu`, `--gpu-device`
-- **Commissions/Slippage**: `--commission-rate`, `--slippage-pct`
+- **Commissions/Slippage**: `--commission-rate`, `--slippage-pct`, `--use-bnb-for-fees`
 - **Debug**: `--debug`, `--log-level`, `--log-file`
 - **Actions**: `--train`, `--backtest`, `--optimize`, `--show-balance`, `--health-check`
 
@@ -38,8 +38,9 @@
   - `--confidence-threshold`: Umbral de confianza para señales (default: 0.7)
   - `--max-daily-trades`: Máximo de trades por día (default: 30)
   - `--max-daily-loss-pct`: Pérdida máxima diaria (default: 3.0%)
-  - `--commission-rate`: Comisión por operación (default: 0.0004, equivalente a 0.04%)
+  - `--commission-rate`: Comisión por operación (default: 0.001, equivalente a 0.1% - tarifa estándar Binance VIP 0)
   - `--slippage-pct`: Porcentaje de slippage (default: 0.0002, equivalente a 0.02%)
+  - `--use-bnb-for-fees`: Usar BNB para pagar comisiones (default: False). Si es True, se aplica descuento del 25% (0.075%)
 
 ## Backtester Parameters
 ```bash
@@ -50,7 +51,17 @@ python backtester.py --symbols BTCUSDT --timeframe 1m --use-ml \
   --initial-balance 10000 \
   --confidence-threshold 0.7 \
   --max-daily-trades 30 \
-  --commission 0.0004 \
+  --commission 0.001 \
+  --slippage 0.0002 \
+  --plot
+```
+
+O utilizando BNB para descuento en comisiones:
+
+```bash
+python backtester.py --symbols BTCUSDT --timeframe 1m \
+  --initial-balance 10000 \
+  --commission 0.00075 \
   --slippage 0.0002 \
   --plot
 ```
@@ -70,7 +81,11 @@ python backtester.py --symbols BTCUSDT --timeframe 1m --use-ml \
 - **Límite Diario**: Implementado límite máximo de trades por día (30 por defecto)
 - **Pérdida Máxima**: Stop de pérdidas diario (3% del capital por defecto)
 - **Cooling Period**: Tiempo de espera entre operaciones para evitar overtrading
-- **Comisiones/Slippage**: Modelado realista de costos de transacción
+- **Comisiones/Slippage**: Modelado realista de costos de transacción:
+  - Comisión estándar: 0.1% (tarifa Binance VIP 0)
+  - Comisión con BNB: 0.075% (descuento del 25% al usar BNB para comisiones)
+  - Pares con comisión cero: Configurable en commission_config.py (pairs_with_zero_fee)
+  - Slippage: 0.02% por defecto, ajustable por símbolo y tamaño de orden
 - **Umbrales de Confianza**: Filtrado de señales débiles (confidence_threshold = 0.7)
 
 ## ML Module

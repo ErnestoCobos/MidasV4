@@ -201,8 +201,9 @@ config.use_gpu = True             # Activar aceleración GPU
 config.gpu_device = 0             # ID del dispositivo GPU a usar
 
 # Parámetros de Comisiones y Slippage
-config.commission_rate = 0.0004   # 0.04% comisión
-config.slippage_pct = 0.0002      # 0.02% slippage
+config.commission_rate = 0.001   # 0.1% comisión (tarifa estándar Binance VIP 0)
+config.slippage_pct = 0.0002     # 0.02% slippage
+# Para usar la tarifa con descuento BNB (25% descuento): 0.00075 (0.075%)
 
 # Parámetros de Trading
 config.confidence_threshold = 0.7 # Umbral de confianza para señales (0-1)
@@ -247,7 +248,20 @@ python backtester.py --symbols BTCUSDT --timeframe 1m --use-ml \
   --initial-balance 10000 \
   --confidence-threshold 0.7 \
   --max-daily-trades 30 \
-  --commission 0.0004 \
+  --commission 0.001 \
+  --slippage 0.0002 \
+  --plot
+```
+
+O utilizando la tarifa con descuento por BNB:
+
+```bash
+python backtester.py --symbols BTCUSDT --timeframe 1m --use-ml \
+  --xgb-model saved_models/xgboost_model.json \
+  --lstm-model saved_models/lstm_model \
+  --use-gpu \
+  --initial-balance 10000 \
+  --commission 0.00075 \
   --slippage 0.0002 \
   --plot
 ```
@@ -268,6 +282,10 @@ python backtester.py --symbols BTCUSDT --timeframe 1m --use-ml \
    - Validar modelos con datos out-of-sample
    - Implementar monitoreo constante de rendimiento
    - Reentrenar periódicamente con datos recientes
+   - Incluir comisiones realistas:
+     - Estándar: 0.1% (VIP 0)
+     - Con BNB: 0.075% (descuento 25%)
+     - Considerar los pares con comisión cero para optimización
 
 4. **Optimización de Recursos**:
    - Usar TensorFlow-Lite para despliegue más eficiente
