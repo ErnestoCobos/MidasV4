@@ -37,6 +37,13 @@ class BinanceClient:
         self._ws_connections = {}
         self.simulation_mode = self.config.api_key == "simulation_mode_key"
         
+        # Initialize commission and slippage parameters
+        self.commission_rate = getattr(config, 'commission_rate', 0.0004)  # 0.04% default commission
+        self.slippage_pct = getattr(config, 'slippage_pct', 0.0002)        # 0.02% default slippage
+        
+        logger.info(f"Using commission rate: {self.commission_rate*100:.4f}%, "
+                   f"slippage: {self.slippage_pct*100:.4f}%")
+        
         if not self.simulation_mode and not self.config.validate():
             raise CredentialsError("API credentials are not properly configured")
 
@@ -199,6 +206,12 @@ class BinanceClient:
         Raises:
             APIError: Si no hay fondos suficientes o hay un error en la API
         """
+        # Normalize quantity according to symbol rules
+        normalized_quantity = self.normalize_quantity(symbol, quantity)
+        
+        # Log the normalization for debugging
+        logger.debug(f"Original quantity for {symbol}: {quantity}, normalized: {normalized_quantity}")
+        
         # Validar los fondos disponibles (especialmente para compras)
         if side.upper() == 'BUY' and not self.simulation_mode:
             # Verificar fondos disponibles para operaciones reales (no simulación)
@@ -207,7 +220,7 @@ class BinanceClient:
             
             # Obtener precio actual para mercado o usar el precio especificado para limit
             current_price = price if price else self.get_market_price(symbol)
-            required_funds = float(quantity) * float(current_price)
+            required_funds = float(normalized_quantity) * float(current_price)
             
             if required_funds > quote_balance:
                 error_msg = f"Fondos insuficientes para {symbol}: {required_funds} {quote_asset} requeridos, {quote_balance} {quote_asset} disponibles"
@@ -220,7 +233,21 @@ class BinanceClient:
                 65000.0 if 'BTC' in symbol else (3500.0 if 'ETH' in symbol else 100.0)
             )
             
-            # Create mock main order
+            # Apply slippage to the price based on order side
+            slipped_price = current_price
+            if side == 'BUY':
+                # For buys, price slips upward (worse entry price)
+                slipped_price = current_price * (1 + self.slippage_pct)
+                logger.debug(f"Applied BUY slippage: {current_price} -> {slipped_price} (+{self.slippage_pct*100:.4f}%)")
+            else:
+                # For sells, price slips downward (worse entry price)
+                slipped_price = current_price * (1 - self.slippage_pct)
+                logger.debug(f"Applied SELL slippage: {current_price} -> {slipped_price} (-{self.slippage_pct*100:.4f}%)")
+                
+            # Calculate commission
+            commission_amount = quantity * slipped_price * self.commission_rate
+            
+            # Create mock main order with slippage and commission
             main_order = {
                 'symbol': symbol,
                 'orderId': order_id,
@@ -233,9 +260,9 @@ class BinanceClient:
                 'type': 'LIMIT' if price else 'MARKET',
                 'side': side,
                 'fills': [{
-                    'price': str(current_price),
+                    'price': str(slipped_price),  # Price with slippage applied
                     'qty': str(quantity),
-                    'commission': '0.0',
+                    'commission': str(commission_amount),  # Real commission
                     'commissionAsset': 'BNB'
                 }]
             }
@@ -280,21 +307,21 @@ class BinanceClient:
             return orders
         
         try:
-            # Create main order
-            main_order = self.create_spot_order(symbol, side, quantity, price)
+            # Create main order using the normalized quantity
+            main_order = self.create_spot_order(symbol, side, normalized_quantity, price)
             orders = {'main_order': main_order}
 
             if main_order['status'] == 'FILLED':
                 opposite_side = 'SELL' if side == 'BUY' else 'BUY'
 
-                # Create stop loss order
+                # Create stop loss order with normalized quantity
                 if stop_loss:
                     try:
                         sl_order = self.client.create_order(
                             symbol=symbol,
                             side=opposite_side,
                             type='STOP_LOSS_LIMIT',
-                            quantity=quantity,
+                            quantity=normalized_quantity,
                             price=float(stop_loss),
                             stopPrice=float(stop_loss),
                             timeInForce='GTC'
@@ -303,14 +330,14 @@ class BinanceClient:
                     except Exception as e:
                         logger.error(f"Failed to create stop loss order: {str(e)}")
 
-                # Create take profit order
+                # Create take profit order with normalized quantity
                 if take_profit:
                     try:
                         tp_order = self.client.create_order(
                             symbol=symbol,
                             side=opposite_side,
                             type='LIMIT',
-                            quantity=quantity,
+                            quantity=normalized_quantity,
                             price=float(take_profit),
                             timeInForce='GTC'
                         )
@@ -520,6 +547,121 @@ class BinanceClient:
             logger.error(f"API error while fetching klines for {symbol}: {str(e)}")
             raise APIError(f"Failed to get klines: {str(e)}")
 
+    def get_symbol_info(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get trading rules and precision information for a symbol
+        
+        Args:
+            symbol (str): Trading pair symbol (e.g., 'BTCUSDT')
+            
+        Returns:
+            Dict[str, Any]: Symbol information including precision rules
+        """
+        if self.simulation_mode:
+            # Return simulated symbol info with reasonable precision values
+            base_asset = symbol[:3] if len(symbol) >= 3 else symbol
+            quote_asset = symbol[3:] if len(symbol) >= 6 else 'USDT'
+            
+            # Assign appropriate precision values based on symbol
+            if base_asset == 'BTC':
+                qty_precision = 6  # 0.000001 BTC minimum
+            elif base_asset == 'ETH':
+                qty_precision = 5  # 0.00001 ETH minimum
+            else:
+                qty_precision = 2  # 0.01 units minimum for other assets
+                
+            if quote_asset == 'USDT' or quote_asset == 'BUSD':
+                price_precision = 2  # 0.01 USDT/BUSD precision
+            else:
+                price_precision = 8  # 0.00000001 precision for crypto/crypto pairs
+            
+            return {
+                'symbol': symbol,
+                'baseAsset': base_asset,
+                'quoteAsset': quote_asset,
+                'status': 'TRADING',
+                'baseAssetPrecision': 8,
+                'quotePrecision': 8,
+                'quoteAssetPrecision': 8,
+                'orderTypes': ['LIMIT', 'MARKET'],
+                'filters': [
+                    {
+                        'filterType': 'LOT_SIZE',
+                        'minQty': f"0.{'0' * (qty_precision - 1)}1",
+                        'maxQty': '9000000.00000000',
+                        'stepSize': f"0.{'0' * (qty_precision - 1)}1"
+                    },
+                    {
+                        'filterType': 'PRICE_FILTER',
+                        'minPrice': f"0.{'0' * (price_precision - 1)}1",
+                        'maxPrice': '1000000.00000000',
+                        'tickSize': f"0.{'0' * (price_precision - 1)}1"
+                    },
+                ]
+            }
+            
+        try:
+            # Get exchange info
+            exchange_info = self.client.get_exchange_info()
+            
+            # Find symbol info
+            for symbol_info in exchange_info['symbols']:
+                if symbol_info['symbol'] == symbol:
+                    return symbol_info
+                    
+            # If symbol not found
+            raise APIError(f"Symbol {symbol} not found in exchange info")
+            
+        except BinanceAPIException as e:
+            logger.error(f"API error while fetching symbol info for {symbol}: {str(e)}")
+            raise APIError(f"Failed to get symbol info: {str(e)}")
+    
+    def normalize_quantity(self, symbol: str, quantity: Union[float, Decimal]) -> str:
+        """
+        Normalize quantity based on symbol's lot size filter
+        
+        Args:
+            symbol (str): Trading pair symbol (e.g., 'BTCUSDT')
+            quantity (float|Decimal): Original quantity
+            
+        Returns:
+            str: Normalized quantity as string with proper precision
+        """
+        try:
+            # Get symbol info
+            symbol_info = self.get_symbol_info(symbol)
+            
+            # Find lot size filter
+            lot_size_filter = next(
+                (f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'),
+                None
+            )
+            
+            if lot_size_filter:
+                step_size = float(lot_size_filter['stepSize'])
+                
+                # Calculate decimal places needed
+                if step_size < 1:
+                    step_size_str = str(step_size).rstrip('0')
+                    decimal_places = len(step_size_str.split('.')[-1])
+                else:
+                    decimal_places = 0
+                
+                # Truncate quantity to match step size
+                quantity_float = float(quantity)
+                normalized_quantity = int(quantity_float / step_size) * step_size
+                
+                # Format with correct precision
+                return f"{{:.{decimal_places}f}}".format(normalized_quantity)
+            
+            # Default to 8 decimal places if no filter found
+            return f"{float(quantity):.8f}"
+            
+        except Exception as e:
+            logger.warning(f"Error normalizing quantity, using default precision (8): {str(e)}")
+            # Fall back to 8 decimal places
+            return f"{float(quantity):.8f}"
+    
     def create_spot_order(
         self,
         symbol: str,
@@ -533,6 +675,9 @@ class BinanceClient:
         if side not in ['BUY', 'SELL']:
             raise ValueError("side must be either 'BUY' or 'SELL'")
             
+        # Normalize quantity to proper precision for this symbol
+        normalized_quantity = self.normalize_quantity(symbol, quantity)
+            
         if self.simulation_mode:
             # Create simulated order
             order_id = int(time.time() * 1000)  # Use timestamp as order ID
@@ -544,11 +689,15 @@ class BinanceClient:
             else:
                 current_price = float(price)
                 
+            # Use normalized quantity
+            normalized_quantity = self.normalize_quantity(symbol, quantity)
+            logger.debug(f"Normalized quantity for {symbol}: {normalized_quantity} (from {quantity})")
+            
             # Verificar fondos suficientes para la operación (spot)
             if side == 'BUY':
                 quote_asset = symbol[3:]  # e.g., 'USDT' from 'BTCUSDT'
                 quote_balance = self.get_account_balance(quote_asset).get(quote_asset, 0)
-                order_cost = float(quantity) * current_price
+                order_cost = float(normalized_quantity) * current_price
                 
                 # Si no hay fondos suficientes, simular error de fondos insuficientes
                 if order_cost > quote_balance:
@@ -567,7 +716,7 @@ class BinanceClient:
                 base_asset = symbol[:3]  # e.g., 'BTC' from 'BTCUSDT'
                 base_balance = self.get_account_balance(base_asset).get(base_asset, 0)
                 
-                if float(quantity) > base_balance:
+                if float(normalized_quantity) > base_balance:
                     error_msg = f"Fondos insuficientes para {symbol}: requiere {quantity} {base_asset}, disponible {base_balance} {base_asset}"
                     logger.error(error_msg)
                     raise APIError(error_msg)
@@ -590,14 +739,14 @@ class BinanceClient:
                 'clientOrderId': f'sim_{order_id}',
                 'transactTime': int(time.time() * 1000),
                 'price': str(price) if price else '0.0',
-                'origQty': str(quantity),
-                'executedQty': str(quantity),
+                'origQty': normalized_quantity,
+                'executedQty': normalized_quantity,
                 'status': 'FILLED',
                 'type': order_type,
                 'side': side,
                 'fills': [{
                     'price': str(current_price),
-                    'qty': str(quantity),
+                    'qty': normalized_quantity,
                     'commission': '0.0',
                     'commissionAsset': 'BNB'
                 }]
@@ -611,20 +760,42 @@ class BinanceClient:
             order_params = {
                 'symbol': symbol,
                 'side': side,
-                'quantity': float(quantity),
+                'quantity': normalized_quantity,
             }
 
             if price:
                 # Limit order
+                # Normalize price based on symbol rules
+                price_filter = next(
+                    (f for f in self.get_symbol_info(symbol)['filters'] if f['filterType'] == 'PRICE_FILTER'),
+                    None
+                )
+                
+                if price_filter:
+                    tick_size = float(price_filter['tickSize'])
+                    if tick_size < 1:
+                        tick_size_str = str(tick_size).rstrip('0')
+                        price_decimal_places = len(tick_size_str.split('.')[-1])
+                    else:
+                        price_decimal_places = 0
+                    
+                    # Format price with correct precision
+                    normalized_price = f"{{:.{price_decimal_places}f}}".format(float(price))
+                else:
+                    normalized_price = f"{float(price):.2f}"  # Default to 2 decimal places
+                
                 order_params.update({
                     'type': 'LIMIT',
-                    'price': float(price),
+                    'price': normalized_price,
                     'timeInForce': 'GTC'  # Good Till Cancelled
                 })
             else:
                 # Market order
                 order_params['type'] = 'MARKET'
 
+            # Log normalized values for debugging
+            logger.debug(f"Normalized order parameters for {symbol}: {order_params}")
+            
             # Create the order
             order = self.client.create_order(**order_params)
             logger.info(f"Successfully created {order_params['type']} {side} order for {symbol}")
