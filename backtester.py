@@ -472,13 +472,18 @@ class Backtester:
         # Update strategy
         self.strategy.register_position(symbol, trade)
         
-        # Update balance (subtract trade value + commission)
+        # Update balance accounting for trade value and commission
         trade_value = execution['execution_price'] * quantity
+        commission = execution['commission']
+        
         if side == 'BUY':
-            self.current_balance -= (trade_value + execution['commission'])
+            # For BUY, we spend the trade value + commission
+            self.current_balance -= (trade_value + commission)
+            self.logger.debug(f"BUY position entry: -{trade_value:.2f} (value) -{commission:.2f} (commission) = -{trade_value + commission:.2f}")
         else:
-            # For SELL, we receive funds but still pay commission
-            self.current_balance += (trade_value - execution['commission'])
+            # For SELL, we receive the trade value - commission
+            self.current_balance += (trade_value - commission)
+            self.logger.debug(f"SELL position entry: +{trade_value:.2f} (value) -{commission:.2f} (commission) = +{trade_value - commission:.2f}")
             
         self.logger.info(
             f"Opened {side} trade for {symbol}: {quantity} @ {execution['execution_price']} "
@@ -515,16 +520,21 @@ class Backtester:
             self.logger.error(f"Failed to close trade: {execution.get('error', 'Unknown error')}")
             return execution
             
-        # Calculate profit/loss
+        # Calculate trade value at exit (with execution price)
+        exit_value = execution['execution_price'] * trade['quantity']
+        
+        # Calculate original commission already paid at entry
+        entry_commission = trade.get('commission', 0)
+        
+        # Calculate P/L based on position type
         if side == 'BUY':
-            # Long position: exit_price - entry_price
-            profit_loss = (execution['execution_price'] - trade['entry_price']) * trade['quantity']
+            # Long position: (exit_value - exit_commission) - (entry_value + entry_commission)
+            entry_value = trade['entry_price'] * trade['quantity']
+            profit_loss = (exit_value - execution['commission']) - (entry_value + entry_commission)
         else:
-            # Short position: entry_price - exit_price
-            profit_loss = (trade['entry_price'] - execution['execution_price']) * trade['quantity']
-            
-        # Subtract commission from profit/loss
-        profit_loss -= execution['commission']
+            # Short position: (entry_value - entry_commission) - (exit_value + exit_commission)
+            entry_value = trade['entry_price'] * trade['quantity']
+            profit_loss = (entry_value - entry_commission) - (exit_value + execution['commission'])
         
         # Update trade with exit details
         trade.update({
@@ -547,12 +557,20 @@ class Backtester:
         # Remove from open trades
         del self.open_trades[symbol]
         
-        # Update balance
-        self.current_balance += profit_loss
+        # For clarity, let's calculate the final balance update separately from P/L
+        exit_value = execution['execution_price'] * trade['quantity']
+        exit_commission = execution['commission']
         
-        # Add trade value if it was a long position we're closing
         if side == 'BUY':
-            self.current_balance += (execution['execution_price'] * trade['quantity'] - execution['commission'])
+            # When closing a long position (BUY), we receive the exit value minus commission
+            # Note: The entry cost was already deducted when opening the position
+            self.current_balance += (exit_value - exit_commission)
+            self.logger.debug(f"Closing BUY position: +{exit_value:.2f} (exit value) -{exit_commission:.2f} (exit commission) = P/L: {profit_loss:.2f}")
+        else:
+            # When closing a short position (SELL), we pay the exit value plus commission
+            # Note: The entry proceeds were already added when opening the position
+            self.current_balance -= (exit_value + exit_commission)
+            self.logger.debug(f"Closing SELL position: -{exit_value:.2f} (exit value) -{exit_commission:.2f} (exit commission) = P/L: {profit_loss:.2f}")
         
         self.logger.info(
             f"Closed {side} trade for {symbol}: {trade['quantity']} @ {execution['execution_price']} "
@@ -738,10 +756,25 @@ class Backtester:
         win_rate = win_count / total_trades if total_trades > 0 else 0
         
         # Profit metrics
+        # Ensure profit_loss already includes commission costs
         total_profit = sum(t.get('profit_loss', 0) for t in win_trades)
         total_loss = sum(abs(t.get('profit_loss', 0)) for t in loss_trades)
         
-        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf') if total_profit > 0 else 0
+        # Calculate total commission costs for better reporting
+        total_commission = sum(t.get('commission', 0) for t in self.trade_history)
+        total_commission += sum(t.get('exit_commission', 0) for t in self.trade_history)
+        
+        # Pure profit factor (without commissions)
+        raw_profit_factor = total_profit / total_loss if total_loss > 0 else float('inf') if total_profit > 0 else 0
+        
+        # Adjusted profit factor accounting for commissions
+        # This is more accurate for real-world performance assessment
+        adjusted_profit = total_profit - (total_commission * (win_count / total_trades if total_trades > 0 else 0))
+        adjusted_loss = total_loss + (total_commission * (loss_count / total_trades if total_trades > 0 else 0))
+        adjusted_profit_factor = adjusted_profit / adjusted_loss if adjusted_loss > 0 else float('inf') if adjusted_profit > 0 else 0
+        
+        # Use adjusted profit factor as the main metric
+        profit_factor = adjusted_profit_factor
         
         average_profit = total_profit / win_count if win_count > 0 else 0
         average_loss = total_loss / loss_count if loss_count > 0 else 0
@@ -808,6 +841,7 @@ class Backtester:
             'loss_count': loss_count,
             'win_rate': win_rate,
             'profit_factor': profit_factor,
+            'raw_profit_factor': raw_profit_factor,  # Unadjusted profit factor (for comparison)
             'average_profit': average_profit,
             'average_loss': average_loss,
             'largest_profit': largest_profit,
@@ -820,7 +854,11 @@ class Backtester:
             'net_profit': self.current_balance - self.initial_balance,
             'net_profit_pct': (self.current_balance / self.initial_balance - 1) * 100,
             'commission_impact': total_commission / self.initial_balance * 100,
-            'slippage_impact': total_slippage / self.initial_balance * 100
+            'slippage_impact': total_slippage / self.initial_balance * 100,
+            'gross_profit': total_profit,
+            'gross_loss': total_loss,
+            'adjusted_profit': adjusted_profit,
+            'adjusted_loss': adjusted_loss
         }
         
     def plot_equity_curve(self, figsize=(10, 6), save_path=None):
@@ -1076,11 +1114,57 @@ def main():
     print(f"Net Profit: ${backtester.current_balance - args.initial_balance:.2f} ({(backtester.current_balance / args.initial_balance - 1) * 100:.2f}%)")
     print(f"Total Trades: {metrics['total_trades']}")
     print(f"Win Rate: {metrics['win_rate']*100:.2f}%")
-    print(f"Profit Factor: {metrics['profit_factor']:.2f}")
+    print("\nProfitability Metrics:")
+    print(f"Raw Profit Factor: {metrics['raw_profit_factor']:.2f} (without commissions)")
+    print(f"Adjusted Profit Factor: {metrics['profit_factor']:.2f} (including commissions)")
+    print(f"Gross Profit: ${metrics['gross_profit']:.2f}")
+    print(f"Gross Loss: ${metrics['gross_loss']:.2f}")
+    print(f"Adjusted Profit: ${metrics['adjusted_profit']:.2f}")
+    print(f"Adjusted Loss: ${metrics['adjusted_loss']:.2f}")
+    print(f"Average Win: ${metrics['average_profit']:.2f}")
+    print(f"Average Loss: ${metrics['average_loss']:.2f}")
+    
+    print("\nRisk Metrics:")
     print(f"Max Drawdown: ${metrics['max_drawdown']:.2f} ({metrics['max_drawdown_pct']*100:.2f}%)")
-    print(f"Commission Impact: ${metrics['total_commission']:.2f} ({metrics['commission_impact']:.2f}% of initial capital)")
-    print(f"Slippage Impact: ${metrics['total_slippage']:.2f} ({metrics['slippage_impact']:.2f}% of initial capital)")
     print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    
+    print("\nTransaction Costs:")
+    print(f"Total Commission: ${metrics['total_commission']:.2f} ({metrics['commission_impact']:.2f}% of initial capital)")
+    print(f"Total Slippage: ${metrics['total_slippage']:.2f} ({metrics['slippage_impact']:.2f}% of initial capital)")
+    print(f"Transaction Cost Impact: ${metrics['total_commission'] + metrics['total_slippage']:.2f} " +
+          f"({(metrics['commission_impact'] + metrics['slippage_impact']):.2f}% of initial capital)")
+    
+    # Calculate symbol performance
+    if hasattr(backtester, 'trade_history') and backtester.trade_history:
+        symbol_performance = {}
+        for trade in backtester.trade_history:
+            symbol = trade['symbol']
+            if symbol not in symbol_performance:
+                symbol_performance[symbol] = {
+                    'trades': 0, 
+                    'wins': 0,
+                    'losses': 0,
+                    'profit_loss': 0,
+                    'commissions': 0
+                }
+            
+            symbol_performance[symbol]['trades'] += 1
+            if trade.get('profit_loss', 0) > 0:
+                symbol_performance[symbol]['wins'] += 1
+            else:
+                symbol_performance[symbol]['losses'] += 1
+                
+            symbol_performance[symbol]['profit_loss'] += trade.get('profit_loss', 0)
+            symbol_performance[symbol]['commissions'] += trade.get('commission', 0) + trade.get('exit_commission', 0)
+        
+        print("\nPerformance by Symbol:")
+        for symbol, perf in symbol_performance.items():
+            win_rate = perf['wins']/perf['trades']*100 if perf['trades'] > 0 else 0
+            print(f"{symbol}: {perf['profit_loss']:.2f} USD | " +
+                  f"{perf['trades']} trades | " +
+                  f"Win rate: {win_rate:.1f}% | " +
+                  f"Commissions: {perf['commissions']:.2f} USD")
+    
     print(f"\nResults saved to: {results_path}")
     if args.plot:
         print(f"Equity curve plot saved to: {plot_path}")

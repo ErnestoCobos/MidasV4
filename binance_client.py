@@ -233,19 +233,40 @@ class BinanceClient:
                 65000.0 if 'BTC' in symbol else (3500.0 if 'ETH' in symbol else 100.0)
             )
             
-            # Apply slippage to the price based on order side
+            # Apply slippage to the price based on order side with a random component
+            import random
+            # Base slippage rate plus small random variation (0 to 20% of base rate)
+            random_factor = 1.0 + random.uniform(0, 0.2)  
+            effective_slippage = self.slippage_pct * random_factor
+            
             slipped_price = current_price
             if side == 'BUY':
                 # For buys, price slips upward (worse entry price)
-                slipped_price = current_price * (1 + self.slippage_pct)
-                logger.debug(f"Applied BUY slippage: {current_price} -> {slipped_price} (+{self.slippage_pct*100:.4f}%)")
+                slipped_price = current_price * (1 + effective_slippage)
+                logger.debug(f"Applied BUY slippage: {current_price} -> {slipped_price} " +
+                            f"(+{effective_slippage*100:.4f}%, base: {self.slippage_pct*100:.4f}%)")
             else:
                 # For sells, price slips downward (worse entry price)
-                slipped_price = current_price * (1 - self.slippage_pct)
-                logger.debug(f"Applied SELL slippage: {current_price} -> {slipped_price} (-{self.slippage_pct*100:.4f}%)")
+                slipped_price = current_price * (1 - effective_slippage)
+                logger.debug(f"Applied SELL slippage: {current_price} -> {slipped_price} " +
+                            f"(-{effective_slippage*100:.4f}%, base: {self.slippage_pct*100:.4f}%)")
                 
-            # Calculate commission
-            commission_amount = quantity * slipped_price * self.commission_rate
+            # Calculate commission (more realistic with tiered rates)
+            # Base commission plus small additional cost for large orders
+            volume_factor = 1.0
+            
+            # Apply slightly higher rates for very large or very small orders
+            trade_value = quantity * slipped_price
+            if trade_value > 100000:  # Very large orders get better rates
+                volume_factor = 0.9
+            elif trade_value < 100:   # Very small orders get worse rates
+                volume_factor = 1.1
+                
+            effective_commission_rate = self.commission_rate * volume_factor
+            commission_amount = trade_value * effective_commission_rate
+            
+            logger.debug(f"Applied commission for {side}: {commission_amount:.4f} " +
+                        f"({effective_commission_rate*100:.4f}%, base: {self.commission_rate*100:.4f}%)")
             
             # Create mock main order with slippage and commission
             main_order = {

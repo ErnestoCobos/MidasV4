@@ -709,6 +709,7 @@ class ScalpingStrategy:
         2. Daily trade limit check
         3. Daily loss limit check
         4. Sufficient time since last trade (to prevent overtrading)
+        5. Symbol-specific risk adjustments
         
         Args:
             symbol: Trading symbol
@@ -735,6 +736,41 @@ class ScalpingStrategy:
         # Check cooling period (time since last trade)
         if not self._check_cooling_period(symbol):
             return False
+        
+        # Apply symbol-specific risk adjustments
+        # ETHUSDT has been showing increased losses, so we'll be more conservative
+        if symbol == 'ETHUSDT':
+            # Check for higher confidence threshold for ETH
+            eth_confidence_threshold = self.confidence_threshold * 1.2  # 20% higher threshold
+            
+            # If the ML module had a recent prediction below the elevated threshold, reject
+            if hasattr(self, 'ml_module') and self.ml_module is not None:
+                recent_pred = getattr(self, 'last_predictions', {}).get(symbol, {})
+                if isinstance(recent_pred, dict) and 'confidence' in recent_pred:
+                    if recent_pred['confidence'] < eth_confidence_threshold:
+                        self.logger.info(f"ETHUSDT requires higher confidence: {recent_pred['confidence']:.2f} < {eth_confidence_threshold:.2f}")
+                        return False
+            
+            # Increase cooling period for ETHUSDT by 50%
+            eth_trades_today = self.trades_today.get(symbol, 0)
+            
+            # Reduce maximum trades for ETHUSDT as it generates more losses
+            eth_max_trades = int(self.max_daily_trades * 0.7)  # 30% fewer trades for ETH
+            
+            if eth_trades_today >= eth_max_trades:
+                self.logger.info(f"ETHUSDT has stricter trade limits: {eth_trades_today}/{eth_max_trades}")
+                return False
+                
+            # If ETH has caused significant losses, be even more cautious
+            if self.daily_loss < -total_capital * 0.01:  # If already lost > 1%
+                eth_trades = [t for t in self.trades_today.keys() if 'ETH' in t]
+                eth_trades_count = len(eth_trades)
+                
+                if eth_trades_count >= 3:  # Only allow 3 ETH trades when in losing territory
+                    self.logger.info(f"Restricting ETHUSDT trades due to daily losses")
+                    return False
+            
+            self.logger.info(f"Applied stricter risk controls for ETHUSDT")
             
         # All checks passed
         return True
