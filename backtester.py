@@ -14,6 +14,12 @@ from config import Config
 from strategy.scalping_strategy import ScalpingStrategy
 from models.ml_module import MLModule
 from strategy.risk_manager import RiskManager
+from commission_config import (
+    standard_fee_rate,
+    bnb_discount_rate,
+    use_bnb_for_fees,
+    pairs_with_zero_fee
+)
 
 # Configure logging
 logging.basicConfig(
@@ -29,9 +35,24 @@ class MockBinanceClient:
         self.config = config
         self.simulation_mode = True
         
-        # Commission and slippage for realistic simulation
-        self.commission_rate = getattr(config, 'commission_rate', 0.0004)  # 0.04% by default
-        self.slippage_pct = getattr(config, 'slippage_pct', 0.0002)       # 0.02% by default
+        # Initialize slippage parameter
+        self.slippage_pct = getattr(config, 'slippage_pct', 0.0002)  # 0.02% by default
+        
+        # Apply commission rates from commission_config
+        # Override with config value if provided (for backward compatibility)
+        if hasattr(config, 'commission_rate'):
+            self.commission_rate = config.commission_rate
+            logger.info(f"Using commission rate from config: {self.commission_rate*100:.4f}%")
+        else:
+            # Set whether to use BNB for fees in backtesting (from global setting)
+            self.use_bnb_for_fees = use_bnb_for_fees
+            
+            if self.use_bnb_for_fees:
+                self.commission_rate = bnb_discount_rate
+                logger.info(f"Using BNB discounted fee rate: {self.commission_rate*100:.4f}%")
+            else:
+                self.commission_rate = standard_fee_rate
+                logger.info(f"Using standard fee rate: {self.commission_rate*100:.4f}%")
         
         # Data storage
         self.data = {}  # symbol -> DataFrame
@@ -163,8 +184,14 @@ class MockBinanceClient:
             # For sells, price slips downward (worse entry price)
             return price * (1 - self.slippage_pct)
             
-    def apply_commission(self, price: float, quantity: float) -> float:
+    def apply_commission(self, symbol: str, price: float, quantity: float) -> float:
         """Calculate commission for a trade"""
+        # Check if symbol has zero fees
+        if symbol in pairs_with_zero_fee:
+            logger.debug(f"Zero commission applied for {symbol} (promotional pair)")
+            return 0.0
+        
+        # Apply standard or BNB discounted rate
         return price * quantity * self.commission_rate
         
     def execute_trade(self, symbol: str, side: str, quantity: float, price: Optional[float] = None) -> Dict[str, Any]:
@@ -184,8 +211,8 @@ class MockBinanceClient:
         # Apply slippage
         execution_price = self.apply_slippage(price, side)
         
-        # Calculate commission
-        commission = self.apply_commission(execution_price, quantity)
+        # Calculate commission with symbol parameter
+        commission = self.apply_commission(symbol, execution_price, quantity)
         
         # Calculate trade value
         trade_value = execution_price * quantity
@@ -988,8 +1015,9 @@ def main():
     
     # Backtest parameters
     parser.add_argument('--initial-balance', type=float, default=10000, help='Initial balance for testing')
-    parser.add_argument('--commission', type=float, default=0.0004, help='Commission rate (0.0004 = 0.04%)')
+    parser.add_argument('--commission', type=float, default=0.001, help='Commission rate (0.001 = 0.1%, Binance VIP 0 standard)')
     parser.add_argument('--slippage', type=float, default=0.0002, help='Slippage percentage (0.0002 = 0.02%)')
+    parser.add_argument('--use-bnb', action='store_true', help='Use BNB for fees (25%% discount, 0.075%% fee)')
     
     # Strategy parameters
     parser.add_argument('--confidence-threshold', type=float, default=0.7, help='Signal confidence threshold (0-1)')
@@ -1015,6 +1043,15 @@ def main():
     # Parse symbols
     symbols = args.symbols.split(',')
     
+    # If BNB is selected for fees, update the global setting
+    if args.use_bnb:
+        import commission_config
+        commission_config.use_bnb_for_fees = True
+        # If no custom commission rate is provided, use the BNB discounted rate
+        if args.commission == 0.001:  # If it's the default value
+            args.commission = commission_config.bnb_discount_rate
+            logger.info(f"Using BNB discount rate: {args.commission*100:.4f}%")
+        
     # Create configuration
     config_dict = {
         'symbols': symbols,
@@ -1026,7 +1063,8 @@ def main():
         'max_daily_trades': args.max_daily_trades,
         'max_daily_loss_pct': args.max_daily_loss,
         'use_ml': args.use_ml,
-        'use_gpu': args.use_gpu
+        'use_gpu': args.use_gpu,
+        'use_bnb_for_fees': args.use_bnb
     }
     
     if args.use_ml:
