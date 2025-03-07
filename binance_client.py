@@ -13,6 +13,12 @@ import json
 import threading
 from config import Config
 from exceptions import CredentialsError, APIError
+from commission_config import (
+    standard_fee_rate,
+    bnb_discount_rate,
+    use_bnb_for_fees,
+    pairs_with_zero_fee
+)
 
 # Configure logging
 logging.basicConfig(
@@ -37,11 +43,26 @@ class BinanceClient:
         self._ws_connections = {}
         self.simulation_mode = self.config.api_key == "simulation_mode_key"
         
-        # Initialize commission and slippage parameters
-        self.commission_rate = getattr(config, 'commission_rate', 0.0004)  # 0.04% default commission
-        self.slippage_pct = getattr(config, 'slippage_pct', 0.0002)        # 0.02% default slippage
+        # Initialize slippage parameter
+        self.slippage_pct = getattr(config, 'slippage_pct', 0.0002)  # 0.02% default slippage
         
-        logger.info(f"Using commission rate: {self.commission_rate*100:.4f}%, "
+        # Apply commission rates from commission_config
+        # Override with config value if provided (for backward compatibility)
+        if hasattr(config, 'commission_rate'):
+            self.commission_rate = config.commission_rate
+            logger.info(f"Using commission rate from config: {self.commission_rate*100:.4f}%")
+        else:
+            # Determine fee rate based on commission_config settings
+            self.use_bnb_for_fees = use_bnb_for_fees
+            
+            if self.use_bnb_for_fees:
+                self.commission_rate = bnb_discount_rate
+                logger.info(f"Using BNB discounted fee rate: {self.commission_rate*100:.4f}%")
+            else:
+                self.commission_rate = standard_fee_rate
+                logger.info(f"Using standard fee rate: {self.commission_rate*100:.4f}%")
+        
+        logger.info(f"Commission rate: {self.commission_rate*100:.4f}%, "
                    f"slippage: {self.slippage_pct*100:.4f}%")
         
         if not self.simulation_mode and not self.config.validate():
@@ -251,22 +272,33 @@ class BinanceClient:
                 logger.debug(f"Applied SELL slippage: {current_price} -> {slipped_price} " +
                             f"(-{effective_slippage*100:.4f}%, base: {self.slippage_pct*100:.4f}%)")
                 
-            # Calculate commission (more realistic with tiered rates)
-            # Base commission plus small additional cost for large orders
-            volume_factor = 1.0
-            
-            # Apply slightly higher rates for very large or very small orders
-            trade_value = quantity * slipped_price
-            if trade_value > 100000:  # Very large orders get better rates
-                volume_factor = 0.9
-            elif trade_value < 100:   # Very small orders get worse rates
-                volume_factor = 1.1
+            # Determine if the symbol has zero fees or should use standard/discounted rates
+            if symbol in pairs_with_zero_fee:
+                fee_pct = 0.0
+                logger.debug(f"Applied zero fee for {symbol} (promotional pair with no fees)")
+            else:
+                # Calculate commission (more realistic with tiered rates)
+                # Base commission plus small additional cost for large orders
+                volume_factor = 1.0
                 
-            effective_commission_rate = self.commission_rate * volume_factor
-            commission_amount = trade_value * effective_commission_rate
+                # Apply slightly higher rates for very large or very small orders
+                trade_value = quantity * slipped_price
+                if trade_value > 100000:  # Very large orders get better rates
+                    volume_factor = 0.9
+                elif trade_value < 100:   # Very small orders get worse rates
+                    volume_factor = 1.1
+                
+                # Use BNB discount if enabled
+                base_fee_rate = self.commission_rate  
+                effective_commission_rate = base_fee_rate * volume_factor
+                fee_pct = effective_commission_rate
             
-            logger.debug(f"Applied commission for {side}: {commission_amount:.4f} " +
-                        f"({effective_commission_rate*100:.4f}%, base: {self.commission_rate*100:.4f}%)")
+            # Calculate final commission amount
+            trade_value = quantity * slipped_price
+            commission_amount = trade_value * fee_pct
+            
+            logger.debug(f"Applied commission for {side} {symbol}: {commission_amount:.4f} " +
+                        f"({fee_pct*100:.4f}%)")
             
             # Create mock main order with slippage and commission
             main_order = {
