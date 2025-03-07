@@ -167,7 +167,7 @@ def plot_performance_chart(trades, output_file=None):
         return None
 
 def display_trade_summary(trades):
-    """Mostrar un resumen de las operaciones recientes"""
+    """Mostrar un resumen de las operaciones recientes con formato mejorado"""
     if not trades:
         print("No hay operaciones registradas.")
         return
@@ -178,65 +178,103 @@ def display_trade_summary(trades):
     
     # Preparar tabla para mostrar
     table_data = []
-    for trade in recent_trades:
+    for idx, trade in enumerate(recent_trades, 1):
         profit = trade.get('profit_loss', 0)
-        profit_str = f"+{profit:.8f}" if profit >= 0 else f"{profit:.8f}"
+        
+        # Formatear P/L con signo, 2 decimales y símbolo de moneda
+        profit_str = f"+{profit:.2f}" if profit >= 0 else f"{profit:.2f}"
         
         # Convertir timestamps a formato legible
         entry_time = trade.get('entry_time')
         if isinstance(entry_time, str):
             try:
-                entry_time = datetime.fromisoformat(entry_time).strftime('%Y-%m-%d %H:%M')
+                entry_time = datetime.fromisoformat(entry_time).strftime('%m-%d %H:%M')
             except ValueError:
                 pass
         
         exit_time = trade.get('exit_time')
         if isinstance(exit_time, str):
             try:
-                exit_time = datetime.fromisoformat(exit_time).strftime('%Y-%m-%d %H:%M')
+                exit_time = datetime.fromisoformat(exit_time).strftime('%m-%d %H:%M')
             except ValueError:
                 pass
         
+        # Abreviar razones de cierre
+        reason = trade.get('exit_reason', 'N/A')
+        if reason == 'take_profit':
+            reason = 'TP'
+        elif reason == 'stop_loss':
+            reason = 'SL'
+        
+        # Obtener valores de entrada/salida
+        entry_price = trade.get('entry_price', 0)
+        exit_price = trade.get('exit_price', 0)
+        
         table_data.append([
+            str(idx),
             trade.get('symbol', 'N/A'),
             trade.get('side', 'N/A'),
-            entry_time,
-            exit_time,
+            f"{entry_price:.4f}" if entry_price else 'N/A',
+            f"{exit_price:.4f}" if exit_price else 'N/A',
             profit_str,
-            trade.get('exit_reason', 'N/A')
+            reason
         ])
     
-    headers = ["Símbolo", "Dirección", "Entrada", "Salida", "P/L", "Razón"]
-    print("\n📜 ÚLTIMAS OPERACIONES:")
+    headers = ["#", "Symbol", "Side", "Entry", "Exit", "P/L", "Reason"]
+    
+    # Crear borde ASCII para la tabla
+    print("\n┌─────────────[ RECENT TRADES ]─────────────┐")
     print(tabulate(table_data, headers=headers, tablefmt="simple"))
+    print("└───────────────────────────────────────────┘")
 
 def display_performance_summary(metrics):
-    """Mostrar un resumen de rendimiento"""
-    print("\n📊 RESUMEN DE RENDIMIENTO:")
-    print(f"Total de operaciones: {metrics['total_trades']}")
-    print(f"Operaciones rentables: {metrics['profitable_trades']} ({metrics['win_rate']:.2f}%)")
-    print(f"Ganancia/Pérdida total: {metrics['total_profit_loss']:.8f}")
+    """Mostrar un resumen de rendimiento con formato mejorado"""
+    
+    # Crear tabla formateada para el resumen de rendimiento
+    print("\n┌─────────────[ PERFORMANCE SUMMARY ]─────────────┐")
+    print(f"│  Total Trades       : {metrics['total_trades']:<6d}                        │")
+    print(f"│  Profitable Trades  : {metrics['profitable_trades']:<6d} (Win Rate: {metrics['win_rate']:.2f}%)      │")
+    print(f"│  Total P/L          : {metrics['total_profit_loss']:.2f} USDT             │")
     
     if metrics['total_trades'] > 0:
-        print(f"Ganancia media: {metrics['avg_profit']:.8f}")
-        print(f"Pérdida media: {metrics['avg_loss']:.8f}")
-        print(f"Factor de beneficio: {metrics['profit_factor']:.2f}")
+        print(f"│  Avg Win            : {metrics['avg_profit']:.2f} USDT                    │")
+        print(f"│  Avg Loss           : {metrics['avg_loss']:.2f} USDT                    │")
+        print(f"│  Profit Factor      : {metrics['profit_factor']:.2f}                        │")
     
-    if metrics['best_symbols']:
-        print("\n🔝 MEJORES PARES:")
-        for i, symbol_data in enumerate(metrics['best_symbols'], 1):
+    print("└──────────────────────────────────────────────────┘")
+    
+    # Tabla para rendimiento por símbolos
+    if metrics['best_symbols'] or metrics['worst_symbols']:
+        print("\n┌─────────────[ SYMBOL PERFORMANCE ]─────────────┐")
+        print("│ Symbol  |   Net P/L (USDT)  |  Trades Executed  │")
+        print("├─────────┼───────────────────┼───────────────────┤")
+        
+        # Mejores símbolos
+        for symbol_data in metrics['best_symbols']:
             symbol = symbol_data['symbol']
             profit = symbol_data['profit']
             trades = symbol_data['trades']
-            print(f"{i}. {symbol}: {profit:.8f} ({trades} operaciones)")
-    
-    if metrics['worst_symbols']:
-        print("\n⚠️ PEORES PARES:")
-        for i, symbol_data in enumerate(metrics['worst_symbols'], 1):
+            
+            # Formatear con separadores de millares
+            profit_str = f"{profit:,.2f}" if profit >= 0 else f"{profit:,.2f}"
+            
+            # Alinear correctamente en la tabla
+            print(f"│ {symbol:<7} │ {profit_str:>16} │ {trades:>17} │")
+        
+        # Peores símbolos
+        for symbol_data in metrics['worst_symbols']:
             symbol = symbol_data['symbol']
             profit = symbol_data['profit']
             trades = symbol_data['trades']
-            print(f"{i}. {symbol}: {profit:.8f} ({trades} operaciones)")
+            
+            # Formatear con separadores de millares
+            profit_str = f"{profit:,.2f}" if profit >= 0 else f"{profit:,.2f}"
+            
+            # Solo mostrar si no es uno de los mejores (evitar duplicados)
+            if symbol not in [s['symbol'] for s in metrics['best_symbols']]:
+                print(f"│ {symbol:<7} │ {profit_str:>16} │ {trades:>17} │")
+                
+        print("└─────────┴───────────────────┴───────────────────┘")
 
 def main():
     parser = argparse.ArgumentParser(description="Mostrar estadísticas de rendimiento del bot")

@@ -90,10 +90,11 @@ class RiskManager:
             self.logger.warning(f"Calculated position size <= 0 for {symbol}, using minimum")
             position_size = 0.001  # Use a small default value
         
-        # Log the calculation
+        # Format position size calculation message with better readability
         self.logger.info(
-            f"Position size for {symbol}: {position_size:.4f} at {entry_price} "
-            f"(risk: {max_risk_amount:.2f}, SL: {stop_loss_price:.2f}, TP: {take_profit_price:.2f})"
+            f"Position Size calculated | Symbol: {symbol} | Size: {position_size:.6f}\n"
+            f"    Entry: {entry_price:.4f} | SL: {stop_loss_price:.4f} | TP: {take_profit_price:.4f}\n"
+            f"    Risk Amount: {max_risk_amount:.2f} USDT | Risk per Unit: {risk_per_unit:.4f}"
         )
         
         # Return the position sizing details
@@ -195,9 +196,17 @@ class RiskManager:
         self.current_exposure += position_value
         self.symbol_exposures[symbol] = self.symbol_exposures.get(symbol, 0) + position_value
         
+        # Format position registration message with better readability
+        side = position_details.get('side', 'Unknown')
+        quantity = position_details['quantity']
+        entry_price = position_details['entry_price']
+        stop_loss = position_details.get('stop_loss', 0)
+        take_profit = position_details.get('take_profit', 0)
+        
         self.logger.info(
-            f"Registered position for {symbol}: {position_details['quantity']} @ {position_details['entry_price']} "
-            f"(total exposure: {self.current_exposure:.2f})"
+            f"Position registered | Symbol: {symbol} | Side: {side}\n"
+            f"    Qty: {quantity:.6f} | Entry: {entry_price:.4f}\n"
+            f"    SL: {stop_loss:.4f} | TP: {take_profit:.4f} | Total Exposure: {self.current_exposure:.2f} USDT"
         )
     
     def close_position(self, symbol: str) -> None:
@@ -220,9 +229,9 @@ class RiskManager:
                 
             del self.open_positions[symbol]
             
+            # Format position closing message with better readability
             self.logger.info(
-                f"Closed position for {symbol} "
-                f"(remaining exposure: {self.current_exposure:.2f})"
+                f"Position closed | Symbol: {symbol} | Remaining Exposure: {self.current_exposure:.2f} USDT"
             )
     
     def calculate_dynamic_stop_loss(self, 
@@ -259,9 +268,10 @@ class RiskManager:
         else:  # SELL
             stop_loss_price = entry_price * (1 + adjusted_sl_pct / 100)
         
+        # Format dynamic stop loss message with better readability
         self.logger.info(
-            f"Dynamic stop loss for {symbol} {direction}: {stop_loss_price:.2f} "
-            f"({adjusted_sl_pct:.2f}% from entry, volatility factor: {volatility_factor:.2f})"
+            f"Stop Loss calculated | Symbol: {symbol} | Direction: {direction}\n"
+            f"    Price: {stop_loss_price:.4f} | Distance: {adjusted_sl_pct:.2f}% | Volatility Factor: {volatility_factor:.2f}"
         )
         
         return stop_loss_price
@@ -301,7 +311,7 @@ class RiskManager:
                     if new_stop > position['stop_loss']:
                         position['stop_loss'] = new_stop
                         updates[symbol] = new_stop
-                        self.logger.info(f"Updated trailing stop for {symbol} to {new_stop:.2f}")
+                        self.logger.info(f"Trailing Stop updated | Symbol: {symbol} | New Level: {new_stop:.4f} | Current Price: {current_price:.4f}")
             
             # For short positions
             elif direction == 'SELL':
@@ -317,7 +327,7 @@ class RiskManager:
                     if new_stop < position['stop_loss']:
                         position['stop_loss'] = new_stop
                         updates[symbol] = new_stop
-                        self.logger.info(f"Updated trailing stop for {symbol} to {new_stop:.2f}")
+                        self.logger.info(f"Trailing Stop updated | Symbol: {symbol} | New Level: {new_stop:.4f} | Current Price: {current_price:.4f}")
         
         return updates
     
