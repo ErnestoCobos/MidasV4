@@ -297,8 +297,7 @@ class BinanceClient:
             trade_value = quantity * slipped_price
             commission_amount = trade_value * fee_pct
             
-            logger.debug(f"Applied commission for {side} {symbol}: {commission_amount:.4f} " +
-                        f"({fee_pct*100:.4f}%)")
+            logger.debug(f"Commission for {symbol} | Rate: {fee_pct*100:.2f}% | Fee Paid: {commission_amount:.2f} USDT | Side: {side}")
             
             # Create mock main order with slippage and commission
             main_order = {

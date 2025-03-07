@@ -1,4 +1,3 @@
-import logging
 import time
 import asyncio
 from typing import Dict, List, Optional, Any
@@ -14,22 +13,23 @@ from exceptions import CredentialsError, APIError, StrategyError, OrderError
 from strategy import ScalpingStrategy
 from strategy.llm_strategy import LLMScalpingStrategy
 from binance_client import BinanceClient
+from core.logging_setup import setup_logging, is_debug_mode, log_exception, COLORS
+from core.debug_helpers import (
+    TradingDebugger, 
+    log_trade_operation, 
+    performance_timer, 
+    debug_function,
+    get_session_id
+)
 
-# Configure logging
-if not os.path.exists('logs'):
-    os.makedirs('logs')
+# Configure enhanced logging
+logger = setup_logging('ScalpingBot', component='trading')
 
-# Solo configurar logging si aún no ha sido configurado
-if not logging.getLogger('ScalpingBot').handlers:
-    file_handler = logging.FileHandler("logs/bot.log")
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    
-    logger = logging.getLogger('ScalpingBot')
-    logger.setLevel(logging.INFO)
-    logger.addHandler(file_handler)
-    logger.propagate = False  # Evitar duplicación de logs
-else:
-    logger = logging.getLogger('ScalpingBot')
+# Initialize debug mode
+debug_mode = is_debug_mode()
+if debug_mode:
+    logger.debug("🔍 DEBUG mode is ENABLED - Detailed trading logs activated")
+    logger.debug(f"Session ID: {get_session_id()}")
 
 class ScalpingBot:
     """
@@ -179,6 +179,7 @@ class ScalpingBot:
             
         return balances
     
+    @performance_timer
     def __init__(self, config: Config):
         """Initialize the bot with configuration"""
         self.config = config
@@ -188,13 +189,18 @@ class ScalpingBot:
         self.open_trades = {}
         self.trades_history = []
         
+        # Initialize trading debugger for detailed operation logs
+        if debug_mode:
+            self.trading_debugger = TradingDebugger(logger)
+            logger.debug("Trading debugger initialized")
+        
         # Initialize database
         try:
             from data.database import SQLiteManager
             self.db = SQLiteManager(config)
-            logger.info("Database initialized successfully")
+            logger.success("Database initialized successfully")
         except Exception as e:
-            logger.error(f"Error initializing database: {str(e)}")
+            log_exception(logger, e, "Error initializing database")
             self.db = None
             
         # Add demo trades if in simulation mode (for TUI demo)
@@ -825,13 +831,49 @@ class ScalpingBot:
         except Exception as e:
             logger.error(f"Error processing price update for {symbol}: {str(e)}")
     
+    @performance_timer
+    @debug_function(logger)
     def _execute_trade(self, symbol: str, side: str, params: Dict[str, float]):
         """Execute a trade based on a signal"""
+        # Generate trade ID for tracking
+        trade_id = f"trade_{symbol}_{side}_{datetime.now().strftime('%H%M%S%f')}"
+        
+        # Log trade operation in detailed format if in debug mode
+        if debug_mode:
+            txid = log_trade_operation(logger, "signal", symbol, {
+                'side': side,
+                'entry': params.get('entry', 0),
+                'stop_loss': params.get('stop_loss', 0),
+                'take_profit': params.get('take_profit', 0),
+                'confidence': params.get('confidence', 0),
+                'strategy_type': params.get('strategy_type', 'unknown')
+            })
+            
+            # Log with trading debugger for advanced visualization
+            if hasattr(self, 'trading_debugger'):
+                self.trading_debugger.log_signal(
+                    strategy_name=params.get('strategy_type', 'indicator'),
+                    symbol=symbol,
+                    timeframe=self.config.timeframe,
+                    signal_data={
+                        'direction': side,
+                        'entry': params.get('entry', 0),
+                        'stop_loss': params.get('stop_loss', 0),
+                        'take_profit': params.get('take_profit', 0),
+                        'confidence': params.get('confidence', 0),
+                        'indicators': params.get('indicators', {})
+                    }
+                )
+        
         try:
             # Get account balance
+            logger.debug(f"[{trade_id}] Getting account balance")
             balances = self.binance_client.get_account_balance()
             quote_asset = symbol[3:]  # e.g., 'USDT' from 'BTCUSDT'
             quote_balance = balances.get(quote_asset, 0)
+            
+            if debug_mode:
+                logger.debug(f"[{trade_id}] Available balance: {quote_balance} {quote_asset}")
             
             entry_price = params['entry']
             stop_loss = params['stop_loss']
@@ -843,6 +885,7 @@ class ScalpingBot:
             confidence = params.get('confidence', 0)
             
             # Calculate position size
+            logger.debug(f"[{trade_id}] Calculating position size")
             quantity = self.strategy.calculate_position_size(
                 symbol=symbol,
                 account_balance=quote_balance,
@@ -850,25 +893,50 @@ class ScalpingBot:
                 stop_loss=stop_loss
             )
             
+            if debug_mode:
+                logger.debug(f"[{trade_id}] Initial quantity calculation: {quantity}")
+                risk_amount = quote_balance * (self.config.max_capital_risk_percent / 100)
+                logger.debug(f"[{trade_id}] Risk amount: {risk_amount} {quote_asset} " +
+                            f"({self.config.max_capital_risk_percent}% of {quote_balance})")
+            
             if quantity <= 0:
-                logger.warning(f"Calculated quantity is zero or negative for {symbol}")
+                logger.warning(f"[{trade_id}] Calculated quantity is zero or negative for {symbol}")
+                if debug_mode and hasattr(self, 'trading_debugger'):
+                    self.trading_debugger.log_decision(
+                        decision_type="skip",
+                        symbol=symbol,
+                        data={'side': side, 'quantity': quantity},
+                        reason="Zero or negative quantity calculated"
+                    )
                 return
                 
             # Verificar que tenemos fondos suficientes para la operación (importante para modo spot)
             required_funds = quantity * entry_price
             if required_funds > quote_balance:
-                logger.warning(f"Fondos insuficientes para {symbol}: {required_funds} {quote_asset} requeridos, {quote_balance} {quote_asset} disponibles")
+                logger.warning(f"[{trade_id}] Fondos insuficientes para {symbol}: {required_funds} {quote_asset} requeridos, {quote_balance} {quote_asset} disponibles")
+                
                 # Ajustar cantidad a los fondos disponibles (con un pequeño margen de seguridad del 1%)
                 available_funds = quote_balance * 0.99  # 1% de margen para comisiones
                 quantity = available_funds / entry_price
-                logger.info(f"Ajustando cantidad a {quantity} basado en fondos disponibles")
+                logger.info(f"[{trade_id}] Ajustando cantidad a {quantity} basado en fondos disponibles")
+                
+                if debug_mode:
+                    logger.debug(f"[{trade_id}] Adjusted quantity: {quantity} (from available funds: {available_funds} {quote_asset})")
                 
                 # Verificar si la cantidad ajustada es suficiente para operar
                 if quantity <= 0 or quantity < self.config.min_trade_quantity:
-                    logger.warning(f"Cantidad ajustada demasiado pequeña para operar: {quantity}")
+                    logger.warning(f"[{trade_id}] Cantidad ajustada demasiado pequeña para operar: {quantity}")
+                    if debug_mode and hasattr(self, 'trading_debugger'):
+                        self.trading_debugger.log_decision(
+                            decision_type="skip",
+                            symbol=symbol,
+                            data={'side': side, 'quantity': quantity, 'min_required': self.config.min_trade_quantity},
+                            reason="Adjusted quantity too small"
+                        )
                     return
             
             # Execute the order with stop loss and take profit
+            logger.debug(f"[{trade_id}] Executing order for {symbol}: {side} {quantity} @ {entry_price}")
             order_result = self.binance_client.create_order_with_sl_tp(
                 symbol=symbol,
                 side=side,
@@ -877,6 +945,19 @@ class ScalpingBot:
                 stop_loss=stop_loss,
                 take_profit=take_profit
             )
+            
+            if debug_mode and hasattr(self, 'trading_debugger'):
+                self.trading_debugger.log_order(
+                    order_data={
+                        'symbol': symbol,
+                        'side': side,
+                        'quantity': quantity,
+                        'price': 'market',
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit
+                    },
+                    signal_id=txid if 'txid' in locals() else None
+                )
             
             # Track the open trade
             trade = {
@@ -890,12 +971,14 @@ class ScalpingBot:
                 'order_id': order_result['main_order']['orderId'],
                 'strategy_type': strategy_type,
                 'model_used': model_used,
-                'confidence': confidence
+                'confidence': confidence,
+                'trade_id': trade_id
             }
             
             # Store trade in database if available
             if hasattr(self, 'db') and self.db:
                 try:
+                    logger.debug(f"[{trade_id}] Storing trade in database")
                     # Format trade data for database
                     db_trade = {
                         'symbol': symbol,
@@ -906,7 +989,8 @@ class ScalpingBot:
                         'strategy_type': strategy_type,
                         'confidence': confidence,
                         'model_used': model_used,
-                        'status': 'open'
+                        'status': 'open',
+                        'trade_id': trade_id
                     }
                     
                     # Store trade in database
@@ -915,16 +999,36 @@ class ScalpingBot:
                     # Add database ID to trade object for later reference
                     if db_id:
                         trade['db_id'] = db_id
+                        logger.debug(f"[{trade_id}] Trade stored in database with ID: {db_id}")
                 except Exception as e:
-                    logger.warning(f"Error storing trade in database: {str(e)}")
+                    log_exception(logger, e, f"[{trade_id}] Error storing trade in database")
             
             # Add trade to open trades
             self.open_trades[symbol] = trade
             
-            logger.info(f"Executed {side} order for {quantity} {symbol} at {entry_price}")
+            # Log trade execution success
+            logger.success(f"Executed {side} order for {quantity} {symbol} at {entry_price}")
+            
+            if debug_mode and hasattr(self, 'trading_debugger'):
+                self.trading_debugger.log_execution(
+                    execution_data={
+                        'symbol': symbol,
+                        'side': side,
+                        'quantity': quantity,
+                        'price': entry_price,
+                        'status': 'success',
+                        'timestamp': datetime.now()
+                    }
+                )
         
         except Exception as e:
-            logger.error(f"Failed to execute trade: {str(e)}")
+            # Log the error with full stack trace in debug mode
+            log_exception(logger, e, f"[{trade_id}] Failed to execute trade")
+            
+            if debug_mode and hasattr(self, 'trading_debugger'):
+                self.trading_debugger.record_exception(e, f"Trade execution for {symbol} {side}")
+            
+            # Re-raise as OrderError for higher-level handling
             raise OrderError(f"Trade execution failed: {str(e)}")
     
     def _check_open_trades(self):
@@ -1050,7 +1154,14 @@ class ScalpingBot:
             self.trades_history.append(trade_result)
             self.total_profit_loss += profit_loss
             
-            logger.info(f"Closed {side} trade for {symbol}: {reason} at {price}, P/L: {profit_loss:.4f}")
+            # Format trade close message with better readability
+            profit_color = COLORS['GREEN'] if profit_loss > 0 else COLORS['RED']
+            profit_str = f"{profit_color}{profit_loss:.2f} USDT{COLORS['RESET']}"
+            
+            logger.info(
+                f"Closed {side} trade for {symbol} | Reason: {reason}\n"
+                f"    Entry: {entry_price:.4f} | Exit: {price:.4f} | P/L: {profit_str}"
+            )
             
             # Here you would place closing orders if needed
             # In this implementation we assume stop loss and take profit orders
@@ -1237,9 +1348,23 @@ if __name__ == "__main__":
         while True:
             time.sleep(60)
             
-            # Print performance summary every minute
+            # Print formatted performance summary every minute
             performance = bot.get_performance_summary()
-            logger.info(f"Performance: {json.dumps(performance)}")
+            
+            # Format a clean performance summary
+            win_rate = performance.get('win_rate', 0)
+            total_pl = performance.get('total_profit_loss', 0)
+            profit_factor = performance.get('profit_factor', 0)
+            
+            # Use color coding for profit/loss
+            pl_color = COLORS['GREEN'] if total_pl >= 0 else COLORS['RED']
+            pl_str = f"{pl_color}{total_pl:.2f}{COLORS['RESET']}"
+            
+            logger.info(
+                f"Performance Summary | Trades: {performance.get('total_trades', 0)} | " +
+                f"Win Rate: {win_rate:.1f}% | P/L: {pl_str} | " +
+                f"Factor: {profit_factor:.2f}"
+            )
     
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
