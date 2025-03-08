@@ -189,6 +189,9 @@ class ScalpingBot:
         self.open_trades = {}
         self.trades_history = []
         
+        # Initialize logger attribute
+        self.logger = logger
+        
         # Initialize trading debugger for detailed operation logs
         if debug_mode:
             self.trading_debugger = TradingDebugger(logger)
@@ -505,17 +508,21 @@ class ScalpingBot:
                 # Crear clave única para el diccionario
                 trade_key = f"{trade['symbol']}_{trade['id']}"
                 
+                # Establecer valores predeterminados para stop loss y take profit basados en la dirección de la operación y precio de entrada
+                default_stop_loss = trade['entry_price'] * 0.99 if trade['side'] == 'BUY' else trade['entry_price'] * 1.01
+                default_take_profit = trade['entry_price'] * 1.01 if trade['side'] == 'BUY' else trade['entry_price'] * 0.99
+                
                 # Convertir campos de la base de datos al formato esperado por el código existente
                 formatted_trade = {
                     'symbol': trade['symbol'],
                     'side': trade['side'],
                     'quantity': trade['quantity'],
                     'entry_price': trade['entry_price'],
-                    'stop_loss': trade['stop_loss'],
-                    'take_profit': trade['take_profit'],
+                    'stop_loss': trade.get('stop_loss', default_stop_loss),
+                    'take_profit': trade.get('take_profit', default_take_profit),
                     'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
-                    'order_id': trade['order_id'],
-                    'strategy_type': trade['strategy_type'],
+                    'order_id': trade.get('order_id', ''),
+                    'strategy_type': trade.get('strategy_type', 'indicator'),
                     'db_id': trade['id']
                 }
                 
@@ -536,107 +543,25 @@ class ScalpingBot:
             # Convertir a lista para compatibilidad con el código existente
             self.trades_history = []
             for trade in closed_trades_list:
+                # Establecer valores predeterminados para stop loss y take profit
+                default_stop_loss = trade['entry_price'] * 0.99 if trade['side'] == 'BUY' else trade['entry_price'] * 1.01
+                default_take_profit = trade['entry_price'] * 1.01 if trade['side'] == 'BUY' else trade['entry_price'] * 0.99
+                
                 # Convertir campos de la base de datos al formato esperado por el código existente
                 formatted_trade = {
                     'symbol': trade['symbol'],
                     'side': trade['side'],
                     'quantity': trade['quantity'],
                     'entry_price': trade['entry_price'],
-                    'exit_price': trade['exit_price'],
-                    'stop_loss': trade['stop_loss'] if 'stop_loss' in trade else None,
-                    'take_profit': trade['take_profit'] if 'take_profit' in trade else None,
+                    'exit_price': trade.get('exit_price'),
+                    'stop_loss': trade.get('stop_loss', default_stop_loss),
+                    'take_profit': trade.get('take_profit', default_take_profit),
                     'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
                     'time_closed': datetime.fromisoformat(trade['exit_time']) if isinstance(trade['exit_time'], str) else trade['exit_time'],
-                    'order_id': trade['order_id'] if 'order_id' in trade else None,
-                    'strategy_type': trade['strategy_type'],
-                    'profit_loss': trade['profit_loss'],
-                    'reason': trade['exit_reason'] if 'exit_reason' in trade else 'unknown'
-                }
-                
-                # Añadir campos opcionales si existen
-                if 'confidence' in trade and trade['confidence'] is not None:
-                    formatted_trade['confidence'] = trade['confidence']
-                if 'model_used' in trade and trade['model_used'] is not None:
-                    formatted_trade['model_used'] = trade['model_used']
-                
-                self.trades_history.append(formatted_trade)
-            
-            # Calcular P/L total
-            self.total_profit_loss = sum(t.get('profit_loss', 0) for t in self.trades_history)
-            logger.info(f"P/L total calculado: {self.total_profit_loss}")
-            
-        except Exception as e:
-            logger.error(f"Error cargando operaciones desde la base de datos: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-    def _load_trades_from_database(self):
-        """Cargar operaciones desde la base de datos a las estructuras en memoria"""
-        logger.info("Cargando operaciones desde la base de datos")
-        try:
-            if not hasattr(self, 'db') or self.db is None:
-                logger.error("No database connection available for loading trades")
-                return
-                
-            # Determinar si estamos en modo simulación
-            is_simulation = hasattr(self.config, 'simulation_mode') and self.config.simulation_mode
-            
-            # Cargar operaciones abiertas
-            open_trades_list = self.db.get_open_trades(is_simulation=is_simulation)
-            logger.info(f"Cargadas {len(open_trades_list)} operaciones abiertas desde la base de datos")
-            
-            # Convertir a diccionario para compatibilidad con el código existente
-            self.open_trades = {}
-            for trade in open_trades_list:
-                # Crear clave única para el diccionario
-                trade_key = f"{trade['symbol']}_{trade['id']}"
-                
-                # Convertir campos de la base de datos al formato esperado por el código existente
-                formatted_trade = {
-                    'symbol': trade['symbol'],
-                    'side': trade['side'],
-                    'quantity': trade['quantity'],
-                    'entry_price': trade['entry_price'],
-                    'stop_loss': trade['stop_loss'],
-                    'take_profit': trade['take_profit'],
-                    'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
-                    'order_id': trade['order_id'],
-                    'strategy_type': trade['strategy_type'],
-                    'db_id': trade['id']
-                }
-                
-                # Añadir campos opcionales si existen
-                if 'profit_loss' in trade and trade['profit_loss'] is not None:
-                    formatted_trade['profit_loss'] = trade['profit_loss']
-                if 'confidence' in trade and trade['confidence'] is not None:
-                    formatted_trade['confidence'] = trade['confidence']
-                if 'model_used' in trade and trade['model_used'] is not None:
-                    formatted_trade['model_used'] = trade['model_used']
-                
-                self.open_trades[trade_key] = formatted_trade
-            
-            # Cargar historial de operaciones cerradas
-            closed_trades_list = self.db.get_trades_history(is_simulation=is_simulation)
-            logger.info(f"Cargadas {len(closed_trades_list)} operaciones cerradas desde la base de datos")
-            
-            # Convertir a lista para compatibilidad con el código existente
-            self.trades_history = []
-            for trade in closed_trades_list:
-                # Convertir campos de la base de datos al formato esperado por el código existente
-                formatted_trade = {
-                    'symbol': trade['symbol'],
-                    'side': trade['side'],
-                    'quantity': trade['quantity'],
-                    'entry_price': trade['entry_price'],
-                    'exit_price': trade['exit_price'],
-                    'stop_loss': trade['stop_loss'] if 'stop_loss' in trade else None,
-                    'take_profit': trade['take_profit'] if 'take_profit' in trade else None,
-                    'time_opened': datetime.fromisoformat(trade['entry_time']) if isinstance(trade['entry_time'], str) else trade['entry_time'],
-                    'time_closed': datetime.fromisoformat(trade['exit_time']) if isinstance(trade['exit_time'], str) else trade['exit_time'],
-                    'order_id': trade['order_id'] if 'order_id' in trade else None,
-                    'strategy_type': trade['strategy_type'],
-                    'profit_loss': trade['profit_loss'],
-                    'reason': trade['exit_reason'] if 'exit_reason' in trade else 'unknown'
+                    'order_id': trade.get('order_id', None),
+                    'strategy_type': trade.get('strategy_type', 'indicator'),
+                    'profit_loss': trade.get('profit_loss', 0),
+                    'reason': trade.get('exit_reason', 'unknown')
                 }
                 
                 # Añadir campos opcionales si existen
@@ -1035,6 +960,26 @@ class ScalpingBot:
         """Check status of open trades and update as needed"""
         symbols_to_remove = []
         
+        # First check the total account balance and take conservative action if needed
+        total_balance_usdt = self._check_account_status()
+        
+        # If balance is too low, close all positions and stop trading
+        min_balance_required = getattr(self.config, 'min_balance_usdt_required', 100)
+        if total_balance_usdt is not None and total_balance_usdt < min_balance_required * 0.5:
+            logger.warning(f"Balance critically low ({total_balance_usdt:.2f} USDT), closing all positions!")
+            # Close all positions in emergency mode
+            for symbol in self.open_trades.keys():
+                if symbol in self.real_time_prices:
+                    self._close_trade(symbol, 'emergency_low_balance', self.real_time_prices[symbol])
+                    symbols_to_remove.append(symbol)
+            
+            # Remove closed trades and return early
+            for symbol in symbols_to_remove:
+                if symbol in self.open_trades:
+                    del self.open_trades[symbol]
+            return
+        
+        # Regular position checking
         for symbol, trade in self.open_trades.items():
             try:
                 current_price = self.real_time_prices.get(symbol)
@@ -1081,6 +1026,127 @@ class ScalpingBot:
         for symbol in symbols_to_remove:
             if symbol in self.open_trades:
                 del self.open_trades[symbol]
+                
+    def _check_account_status(self):
+        """Check account balance and status, including minimum balance requirement"""
+        if self.binance_client:
+            try:
+                balance = self.binance_client.get_account_balance()
+                logger.debug(f"Account balance: {balance}")
+                
+                # Calculate total USD value of the balance
+                total_usdt_balance = 0
+                
+                # Get USDT balance directly
+                if 'USDT' in balance:
+                    total_usdt_balance += balance['USDT']
+                
+                # For other assets, try to get their USDT value
+                # In a simple implementation, just use BTC and ETH which are the most common
+                for asset in ['BTC', 'ETH', 'BNB']:
+                    if asset in balance and balance[asset] > 0:
+                        try:
+                            # Get current price of asset in USDT
+                            symbol = f"{asset}USDT"
+                            if symbol in self.real_time_prices:
+                                asset_price = self.real_time_prices[symbol]
+                                asset_value = balance[asset] * asset_price
+                                total_usdt_balance += asset_value
+                                logger.debug(f"{asset} value: {asset_value:.2f} USDT")
+                        except Exception as conversion_err:
+                            logger.warning(f"Could not convert {asset} to USDT value: {conversion_err}")
+                
+                logger.info(f"Total balance value: {total_usdt_balance:.2f} USDT")
+                
+                # Check minimum balance requirement
+                min_balance_required = getattr(self.config, 'min_balance_usdt_required', 100)
+                
+                if total_usdt_balance < min_balance_required:
+                    logger.warning(f"⚠️ CRITICAL: Balance below minimum requirement! {total_usdt_balance:.2f} USDT < {min_balance_required} USDT")
+                    
+                    # If balance is too low, stop all trading activities
+                    if total_usdt_balance <= 0:
+                        logger.error("❌ ACCOUNT DEPLETED: Balance is zero or negative! All trading stopped.")
+                        self._stop_trading_due_to_low_balance()
+                    else:
+                        logger.warning(f"⚠️ LOW BALANCE WARNING: Only {total_usdt_balance:.2f} USDT remaining")
+                        
+                        # Reduce risk parameters when balance is low
+                        self._adjust_risk_for_low_balance(total_usdt_balance, min_balance_required)
+                        
+                return total_usdt_balance
+                        
+            except Exception as e:
+                logger.error(f"Error checking account status: {str(e)}")
+                return None
+    
+    def _stop_trading_due_to_low_balance(self):
+        """Stop all trading activities due to insufficient balance"""
+        logger.error("EMERGENCY SHUTDOWN: Stopping all trading operations due to insufficient balance")
+        
+        # Close all open trades
+        for symbol in list(self.open_trades.keys()):
+            try:
+                current_price = self.real_time_prices.get(symbol, 0)
+                if current_price > 0:
+                    self._close_trade(symbol, "emergency_low_balance", current_price)
+                    logger.warning(f"Emergency closed position for {symbol} due to low balance")
+            except Exception as e:
+                logger.error(f"Failed to emergency close {symbol}: {str(e)}")
+        
+        # Disable trading
+        self.active = False
+        
+        # Log shutdown information
+        logger.error("===== TRADING HALTED =====")
+        logger.error("Bot has been stopped due to insufficient balance")
+        logger.error("Please add funds or restart with a new configuration")
+        
+        # Display message to console
+        print("\n")
+        print("=" * 80)
+        print("🚨 EMERGENCY SHUTDOWN: BALANCE DEPLETED 🚨".center(80))
+        print("=" * 80)
+        print("\nTrading has been stopped due to insufficient balance.")
+        print("Please add funds or restart with a new configuration.")
+        print("\nFinal account status:")
+        
+        # Try to show final performance summary
+        try:
+            from cli_interface import show_performance
+            show_performance(self)
+        except Exception as e:
+            logger.error(f"Could not display final performance: {str(e)}")
+            # Simple fallback if show_performance fails
+            print(f"Total P/L: {self.total_profit_loss:.8f}")
+    
+    def _adjust_risk_for_low_balance(self, current_balance, min_balance):
+        """Adjust risk parameters when balance is low"""
+        logger.info("Adjusting risk parameters due to low balance")
+        
+        # Calculate how low the balance is as a percentage of minimum
+        balance_ratio = current_balance / min_balance
+        
+        # Only adjust if we're below 90% of minimum required
+        if balance_ratio < 0.9:
+            # Scale risk parameters based on available balance
+            risk_scale = max(0.1, balance_ratio)  # Never go below 10% of original risk
+            
+            # Adjust risk parameters
+            original_max_risk = getattr(self.config, 'max_capital_risk_percent', 1.0)
+            original_per_trade_risk = getattr(self.config, 'max_risk_per_trade', 0.5)
+            
+            # Reduce risk parameters
+            new_max_risk = original_max_risk * risk_scale
+            new_per_trade_risk = original_per_trade_risk * risk_scale
+            
+            # Apply new risk parameters
+            self.config.max_capital_risk_percent = new_max_risk
+            self.config.max_risk_per_trade = new_per_trade_risk
+            
+            logger.warning(f"Risk parameters adjusted due to low balance:")
+            logger.warning(f"  - Max capital risk: {original_max_risk:.2f}% → {new_max_risk:.2f}%")
+            logger.warning(f"  - Max risk per trade: {original_per_trade_risk:.2f}% → {new_per_trade_risk:.2f}%")
     
     def _close_trade(self, symbol: str, reason: str, price: float):
         """Close a trade and record the result"""
@@ -1270,6 +1336,21 @@ class ScalpingBot:
         total_trades = len(self.trades_history)
         profitable_trades = sum(1 for t in self.trades_history if t['profit_loss'] > 0)
         
+        # Get initial balance info
+        initial_balance = {}
+        current_balance = {}
+        
+        if hasattr(self, 'binance_client') and hasattr(self.binance_client, 'get_account_balance'):
+            current_balance = self.binance_client.get_account_balance()
+            
+            # Try to get initial balance from configuration
+            if hasattr(self.config, 'sim_initial_balance'):
+                initial_balance = self.config.sim_initial_balance
+            else:
+                # Estimate initial balance from current + total P/L
+                for asset, amount in current_balance.items():
+                    initial_balance[asset] = amount - self.total_profit_loss if asset == 'USDT' else amount
+        
         # Calculate basic metrics
         if total_trades > 0:
             win_rate = (profitable_trades / total_trades) * 100
@@ -1331,7 +1412,9 @@ class ScalpingBot:
             'trades_per_hour': trades_per_hour,
             'best_symbols': [{'symbol': s, 'profit': p['profit_loss'], 'trades': p['trades']} 
                              for s, p in best_symbols],
-            'active_since': self.trades_history[0]['time_opened'].strftime('%Y-%m-%d %H:%M:%S') if self.trades_history else None
+            'active_since': self.trades_history[0]['time_opened'].strftime('%Y-%m-%d %H:%M:%S') if self.trades_history else None,
+            'initial_balance': initial_balance,
+            'current_balance': current_balance
         }
 
 

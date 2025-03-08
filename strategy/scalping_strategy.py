@@ -202,10 +202,22 @@ class ScalpingStrategy:
                     current_price = features.get('close', features.get('price', 0))
                     
                     # Apply confidence threshold to filter low-quality signals
-                    if result['confidence'] < self.confidence_threshold:
+                    # Use symbol-specific confidence thresholds for problematic symbols
+                    adjusted_threshold = self.confidence_threshold
+                    
+                    # Higher threshold for BNB which has shown poor performance
+                    if symbol == 'BNBUSDT':
+                        adjusted_threshold *= 1.3  # 30% higher threshold for BNB
+                        self.logger.debug(f"Using higher confidence threshold for {symbol}: {adjusted_threshold:.2f}%")
+                    # Higher threshold for ETH
+                    elif symbol == 'ETHUSDT':
+                        adjusted_threshold *= 1.2  # 20% higher threshold for ETH
+                        self.logger.debug(f"Using higher confidence threshold for {symbol}: {adjusted_threshold:.2f}%")
+                        
+                    if result['confidence'] < adjusted_threshold:
                         self.logger.info(
                             f"Signal rejected for {symbol}: {result['direction']} "
-                            f"with {result['confidence']:.2f}% confidence (below threshold {self.confidence_threshold:.2f}%)"
+                            f"with {result['confidence']:.2f}% confidence (below adjusted threshold {adjusted_threshold:.2f}%)"
                         )
                         return {
                             'type': SignalType.NEUTRAL,
@@ -251,11 +263,22 @@ class ScalpingStrategy:
                 current_price = features.get('close', features.get('price', 0))
                 signal = self.signal_generator.generate_signal(prediction, current_price, features)
                 
-                # Apply confidence threshold
-                if signal['confidence'] < self.confidence_threshold:
+                # Apply confidence threshold with symbol-specific adjustments
+                adjusted_threshold = self.confidence_threshold
+                
+                # Higher threshold for BNB which has shown poor performance
+                if symbol == 'BNBUSDT':
+                    adjusted_threshold *= 1.3  # 30% higher threshold for BNB
+                    self.logger.debug(f"Using higher traditional model confidence threshold for {symbol}: {adjusted_threshold:.2f}%")
+                # Higher threshold for ETH
+                elif symbol == 'ETHUSDT':
+                    adjusted_threshold *= 1.2  # 20% higher threshold for ETH
+                    self.logger.debug(f"Using higher traditional model confidence threshold for {symbol}: {adjusted_threshold:.2f}%")
+                    
+                if signal['confidence'] < adjusted_threshold:
                     self.logger.info(
                         f"Signal rejected for {symbol}: {signal['direction']} "
-                        f"with {signal['confidence']:.2f}% confidence (below threshold {self.confidence_threshold:.2f}%)"
+                        f"with {signal['confidence']:.2f}% confidence (below adjusted threshold {adjusted_threshold:.2f}%)"
                     )
                     return {
                         'type': SignalType.NEUTRAL,
@@ -282,11 +305,22 @@ class ScalpingStrategy:
         self.logger.info("Using indicator-based signals as fallback")
         indicator_signal = self._generate_indicator_signal(symbol, features)
         
-        # Apply confidence threshold to indicator signals too
-        if indicator_signal['confidence'] < self.confidence_threshold:
+        # Apply confidence threshold to indicator signals too, with symbol-specific adjustments
+        adjusted_threshold = self.confidence_threshold
+        
+        # Higher threshold for BNB which has shown poor performance
+        if symbol == 'BNBUSDT':
+            adjusted_threshold *= 1.3  # 30% higher threshold for BNB
+            self.logger.debug(f"Using higher indicator confidence threshold for {symbol}: {adjusted_threshold:.2f}%")
+        # Higher threshold for ETH
+        elif symbol == 'ETHUSDT':
+            adjusted_threshold *= 1.2  # 20% higher threshold for ETH
+            self.logger.debug(f"Using higher indicator confidence threshold for {symbol}: {adjusted_threshold:.2f}%")
+            
+        if indicator_signal['confidence'] < adjusted_threshold:
             self.logger.info(
                 f"Indicator signal rejected for {symbol}: {indicator_signal['direction']} "
-                f"with {indicator_signal['confidence']:.2f}% confidence (below threshold {self.confidence_threshold:.2f}%)"
+                f"with {indicator_signal['confidence']:.2f}% confidence (below adjusted threshold {adjusted_threshold:.2f}%)"
             )
             indicator_signal['type'] = SignalType.NEUTRAL
             indicator_signal['direction'] = 'NEUTRAL'
@@ -738,12 +772,12 @@ class ScalpingStrategy:
             return False
         
         # Apply symbol-specific risk adjustments
-        # ETHUSDT has been showing increased losses, so we'll be more conservative
+        # Apply symbol-specific risk adjustments for symbols that have been underperforming
         if symbol == 'ETHUSDT':
-            # Check for higher confidence threshold for ETH
-            eth_confidence_threshold = self.confidence_threshold * 1.2  # 20% higher threshold
+            # Higher confidence threshold for ETH (20% higher)
+            eth_confidence_threshold = self.confidence_threshold * 1.2
             
-            # If the ML module had a recent prediction below the elevated threshold, reject
+            # Check ML module prediction confidence
             if hasattr(self, 'ml_module') and self.ml_module is not None:
                 recent_pred = getattr(self, 'last_predictions', {}).get(symbol, {})
                 if isinstance(recent_pred, dict) and 'confidence' in recent_pred:
@@ -751,26 +785,56 @@ class ScalpingStrategy:
                         self.logger.info(f"ETHUSDT requires higher confidence: {recent_pred['confidence']:.2f} < {eth_confidence_threshold:.2f}")
                         return False
             
-            # Increase cooling period for ETHUSDT by 50%
+            # Reduce maximum trades for ETH (30% fewer)
+            eth_max_trades = int(self.max_daily_trades * 0.7)
             eth_trades_today = self.trades_today.get(symbol, 0)
-            
-            # Reduce maximum trades for ETHUSDT as it generates more losses
-            eth_max_trades = int(self.max_daily_trades * 0.7)  # 30% fewer trades for ETH
             
             if eth_trades_today >= eth_max_trades:
                 self.logger.info(f"ETHUSDT has stricter trade limits: {eth_trades_today}/{eth_max_trades}")
                 return False
                 
-            # If ETH has caused significant losses, be even more cautious
-            if self.daily_loss < -total_capital * 0.01:  # If already lost > 1%
+            # Additional caution in losing conditions
+            if self.daily_loss < -total_capital * 0.01:
                 eth_trades = [t for t in self.trades_today.keys() if 'ETH' in t]
                 eth_trades_count = len(eth_trades)
                 
-                if eth_trades_count >= 3:  # Only allow 3 ETH trades when in losing territory
+                if eth_trades_count >= 3:
                     self.logger.info(f"Restricting ETHUSDT trades due to daily losses")
                     return False
             
             self.logger.info(f"Applied stricter risk controls for ETHUSDT")
+            
+        # BNBUSDT has been showing the largest losses, apply even stricter controls
+        elif symbol == 'BNBUSDT':
+            # Much higher confidence threshold for BNB (30% higher)
+            bnb_confidence_threshold = self.confidence_threshold * 1.3
+            
+            # Check ML module prediction confidence
+            if hasattr(self, 'ml_module') and self.ml_module is not None:
+                recent_pred = getattr(self, 'last_predictions', {}).get(symbol, {})
+                if isinstance(recent_pred, dict) and 'confidence' in recent_pred:
+                    if recent_pred['confidence'] < bnb_confidence_threshold:
+                        self.logger.info(f"BNBUSDT requires much higher confidence: {recent_pred['confidence']:.2f} < {bnb_confidence_threshold:.2f}")
+                        return False
+            
+            # Severely reduce maximum trades for BNB (50% fewer)
+            bnb_max_trades = int(self.max_daily_trades * 0.5)
+            bnb_trades_today = self.trades_today.get(symbol, 0)
+            
+            if bnb_trades_today >= bnb_max_trades:
+                self.logger.info(f"BNBUSDT has very strict trade limits: {bnb_trades_today}/{bnb_max_trades}")
+                return False
+                
+            # Extreme caution in any losing conditions for BNB
+            if self.daily_loss < 0:  # Any losses at all
+                bnb_trades = [t for t in self.trades_today.keys() if 'BNB' in t]
+                bnb_trades_count = len(bnb_trades)
+                
+                if bnb_trades_count >= 2:  # Only allow 2 BNB trades when in losing territory
+                    self.logger.info(f"Severely restricting BNBUSDT trades due to daily losses")
+                    return False
+            
+            self.logger.info(f"Applied very strict risk controls for BNBUSDT")
             
         # All checks passed
         return True
@@ -832,12 +896,30 @@ class ScalpingStrategy:
         
         # Define cooling period based on confidence or fixed value (in seconds)
         # For low confidence trades, use longer cooling period
-        cooling_period = getattr(self.config, 'cooling_period_seconds', 60)
+        base_cooling_period = getattr(self.config, 'cooling_period_seconds', 60)
+        
+        # Apply symbol-specific cooling period adjustments
+        symbol_cooling_factor = 1.0
+        
+        # Increase cooling period for specific symbols that are underperforming
+        if symbol == 'BNBUSDT':
+            symbol_cooling_factor = 3.0  # 3x longer cooling for BNB
+            self.logger.debug(f"Using extended cooling period for {symbol} (3x normal)")
+        elif symbol == 'ETHUSDT':
+            symbol_cooling_factor = 2.0  # 2x longer cooling for ETH
+            self.logger.debug(f"Using extended cooling period for {symbol} (2x normal)")
+            
+        # Adjust cooling period based on trades today (increases as we make more trades)
+        trades_today_factor = min(3.0, 1.0 + (self.trades_today.get(symbol, 0) / self.max_daily_trades))
+        
+        # Calculate final cooling period
+        cooling_period = base_cooling_period * symbol_cooling_factor * trades_today_factor
         
         # Check if enough time has passed
         if time_since_last_trade < cooling_period:
             remaining = cooling_period - time_since_last_trade
-            self.logger.info(f"In cooling period for {symbol}, {remaining:.1f}s remaining")
+            self.logger.info(f"In cooling period for {symbol}, {remaining:.1f}s remaining " 
+                           f"(factor: {symbol_cooling_factor:.1f}x, trades: {self.trades_today.get(symbol, 0)})")
             return False
             
         return True

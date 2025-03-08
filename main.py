@@ -1,4 +1,3 @@
-import logging
 import argparse
 import json
 import os
@@ -6,22 +5,17 @@ import time
 from config import Config
 from bot import ScalpingBot
 from visualization import TradingVisualizer
+from core.logging_setup import setup_logging, is_debug_mode, log_exception
 
-# Configure logging
-# File handler for all logs
-file_handler = logging.FileHandler("bot.log")
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+# Configure logging using the enhanced setup
+logger = setup_logging('Main', component='cli')
 
-# Console handler only for critical and error logs
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.ERROR)  # Only show errors in console
-console_handler.setFormatter(logging.Formatter('❌ %(message)s'))
-
-# Configure root logger
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
-
-logger = logging.getLogger('Main')
+# Log the debug mode status at startup
+debug_mode = is_debug_mode()
+if debug_mode:
+    logger.debug("🔍 DEBUG mode is ENABLED - Verbose logging activated")
+else:
+    logger.info("Debug mode is disabled. Set MIDAS_DEBUG=1 for verbose logging")
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -50,7 +44,7 @@ def parse_arguments():
     
     # Model-related arguments
     parser.add_argument('--model', type=str, default=None,
-                        help='Model type to use (xgboost, lstm, indicator)')
+                        help='Model type to use (xgboost, lstm, indicator, rl, deepscalper)')
     
     parser.add_argument('--model-path', type=str, default=None,
                         help='Path to saved model file to load')
@@ -78,7 +72,24 @@ def parse_arguments():
     parser.add_argument('--train-now', action='store_true',
                         help='Train model immediately on startup')
     
-    return parser.parse_args()
+    # Debug-related arguments
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug mode with verbose logging (alternative to MIDAS_DEBUG=1)')
+    
+    parser.add_argument('--log-level', type=str, default=None,
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help='Set specific logging level')
+    
+    parser.add_argument('--log-file', type=str, default=None,
+                        help='Specify custom log file path')
+    
+    args = parser.parse_args()
+    
+    # Set debug environment variable if specified via command line
+    if args.debug:
+        os.environ['MIDAS_DEBUG'] = '1'
+    
+    return args
 
 def load_config_from_file(file_path):
     """Load configuration from a JSON file"""
@@ -100,7 +111,7 @@ def load_config_from_file(file_path):
         return config
     
     except Exception as e:
-        logger.error(f"Failed to load configuration from {file_path}: {str(e)}")
+        log_exception(logger, e, f"Failed to load configuration from {file_path}")
         raise
 
 def show_welcome():
@@ -138,50 +149,76 @@ def main():
     try:
         # Load configuration
         print("📋 Cargando configuración...")
+        logger.info("Loading configuration")
+        
         if args.config:
+            logger.debug(f"Loading configuration from file: {args.config}")
             config = load_config_from_file(args.config)
             print(f"   ✅ Configuración cargada desde: {args.config}")
+            logger.success(f"Configuration loaded from file: {args.config}")
         else:
+            logger.debug("Loading configuration from environment variables")
             config = Config.from_env()
             print("   ✅ Configuración cargada desde variables de entorno")
+            logger.success("Configuration loaded from environment variables")
+        
+        # Debug log all configuration parameters
+        if debug_mode:
+            logger.debug("Configuration parameters:")
+            for key, value in config.__dict__.items():
+                # Don't log API credentials in detail
+                if key in ('api_key', 'api_secret'):
+                    logger.debug(f"  {key}: {'*' * 8}")
+                else:
+                    logger.debug(f"  {key}: {value}")
         
         # Override with command line arguments
         if args.symbols:
             config.symbols = args.symbols.split(',')
             print(f"   ✅ Pares a monitorear: {', '.join(config.symbols)}")
+            logger.info(f"Trading pairs set to: {', '.join(config.symbols)}")
         
         # Apply model-related arguments
         if args.model:
             config.model_type = args.model
             print(f"   ✅ Tipo de modelo: {config.model_type}")
+            logger.info(f"Model type set to: {config.model_type}")
         
         # Apply GPU-related arguments
         if args.gpu and args.no_gpu:
+            msg = "Conflicting options: --gpu and --no-gpu are mutually exclusive"
             print("   ⚠️ Opciones --gpu y --no-gpu mutuamente excluyentes. Usando configuración por defecto.")
+            logger.warning(msg)
         elif args.gpu:
             config.use_gpu = True
             print("   ✅ Aceleración GPU activada")
+            logger.info("GPU acceleration enabled")
         elif args.no_gpu:
             config.use_gpu = False
             print("   ✅ Aceleración GPU desactivada")
+            logger.info("GPU acceleration disabled")
             
         if args.gpu_device is not None:
             config.gpu_device = args.gpu_device
             config.gpu_id = args.gpu_device
             if config.use_gpu:
                 print(f"   ✅ Dispositivo GPU: {config.gpu_device}")
+                logger.info(f"GPU device set to: {config.gpu_device}")
         
         # Apply training-related arguments
         if args.auto_train:
             config.auto_train = True
             print("   ✅ Entrenamiento automático activado")
+            logger.info("Automatic training enabled")
             
             if args.train_interval:
                 config.training_interval_hours = args.train_interval
                 print(f"   ✅ Intervalo de entrenamiento: {config.training_interval_hours} horas")
+                logger.info(f"Training interval set to: {config.training_interval_hours} hours")
         elif args.no_train:
             config.auto_train = False
             print("   ✅ Entrenamiento automático desactivado")
+            logger.info("Automatic training disabled")
         
         # Validate configuration (skip API validation in simulation mode)
         if not args.simulate and not config.validate():
@@ -233,38 +270,92 @@ def main():
             try:
                 from models.model_factory import ModelFactory
                 print(f"   ⏳ Cargando modelo desde {args.model_path}...")
+                logger.info(f"Loading model from {args.model_path}")
                 model_type = args.model or config.model_type
+                logger.debug(f"Model type for loading: {model_type}")
+                
                 model = ModelFactory.load_model(model_type, config, args.model_path)
                 print(f"   ✅ Modelo {model_type} cargado exitosamente")
+                logger.success(f"Model {model_type} loaded successfully from {args.model_path}")
+                
+                # Log model details in debug mode
+                if debug_mode and hasattr(model, 'summary'):
+                    try:
+                        logger.debug("Model summary:")
+                        model.summary(print_fn=lambda x: logger.debug(f"    {x}"))
+                    except Exception as summary_err:
+                        logger.debug(f"Could not print model summary: {str(summary_err)}")
             except Exception as e:
-                logger.error(f"Error loading model: {str(e)}")
+                log_exception(logger, e, "Error loading model")
                 print(f"   ❌ Error al cargar modelo: {str(e)}")
                 return
         
         # Check for GPU acceleration if enabled
         if config.use_gpu:
             try:
+                logger.debug("Checking GPU availability")
                 from models.model_factory import ModelFactory
                 tf_gpu, xgb_gpu = ModelFactory.is_gpu_available()
+                
+                # Log detailed GPU information in debug mode
+                if debug_mode:
+                    try:
+                        import torch
+                        import tensorflow as tf
+                        
+                        # Log TensorFlow GPU details
+                        logger.debug("TensorFlow GPU details:")
+                        gpu_devices = tf.config.list_physical_devices('GPU')
+                        for gpu in gpu_devices:
+                            logger.debug(f"  Found TensorFlow GPU: {gpu}")
+                        
+                        # Log PyTorch GPU details
+                        logger.debug("PyTorch GPU details:")
+                        if torch.cuda.is_available():
+                            logger.debug(f"  CUDA available: {torch.cuda.is_available()}")
+                            logger.debug(f"  CUDA version: {torch.version.cuda}")
+                            logger.debug(f"  GPU count: {torch.cuda.device_count()}")
+                            for i in range(torch.cuda.device_count()):
+                                logger.debug(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+                    except Exception as gpu_info_err:
+                        logger.debug(f"Could not get detailed GPU info: {str(gpu_info_err)}")
+                
                 if tf_gpu or xgb_gpu:
                     print("   ✅ Hardware GPU detectado y configurado para aceleración")
+                    logger.success("GPU hardware detected and configured for acceleration")
+                    if debug_mode:
+                        logger.debug(f"TensorFlow GPU available: {tf_gpu}")
+                        logger.debug(f"XGBoost GPU available: {xgb_gpu}")
                 else:
                     print("   ⚠️ GPU solicitada pero no detectada. Usando CPU.")
+                    logger.warning("GPU requested but not detected. Using CPU.")
             except Exception as e:
-                logger.warning(f"Error checking GPU: {str(e)}")
+                log_exception(logger, e, "Error checking GPU availability")
         
         # Create and start the bot
+        logger.debug("Creating ScalpingBot instance")
         bot = ScalpingBot(config)
         print("   ✅ Iniciando bot...")
+        logger.info("Starting bot...")
         
         # Train model immediately if requested
         if args.train_now:
             print("   ⏳ Iniciando entrenamiento inmediato del modelo...")
+            logger.info("Starting immediate model training")
             try:
+                # Log training parameters
+                logger.debug(f"Training model with: model_type={config.model_type}, symbol={config.symbols[0]}")
+                
                 # Crear un loop asyncio para ejecutar el entrenamiento
                 import asyncio
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                
+                # Start training timer for performance tracking
+                if debug_mode:
+                    import time
+                    start_time = time.time()
+                    logger.debug("Starting model training process")
                 
                 # Entrenar modelo
                 train_result = loop.run_until_complete(
@@ -276,22 +367,43 @@ def main():
                 )
                 loop.close()
                 
+                # Log training performance in debug mode
+                if debug_mode:
+                    training_time = time.time() - start_time
+                    logger.debug(f"Model training completed in {training_time:.2f} seconds")
+                
                 # Mostrar resultado
                 if train_result.get('status') == 'success':
                     accuracy = train_result['evaluation_metrics']['direction_accuracy'] * 100
                     print(f"   ✅ Entrenamiento completado. Precisión: {accuracy:.2f}%")
                     print(f"   ✅ Modelo guardado en: {train_result['model_path']}")
+                    
+                    logger.success(f"Training completed with {accuracy:.2f}% direction accuracy")
+                    logger.info(f"Model saved to: {train_result['model_path']}")
+                    
+                    # Log detailed metrics in debug mode
+                    if debug_mode and 'evaluation_metrics' in train_result:
+                        logger.debug("Detailed training metrics:")
+                        for metric, value in train_result['evaluation_metrics'].items():
+                            logger.debug(f"  {metric}: {value}")
                 else:
-                    print(f"   ❌ Error en entrenamiento: {train_result.get('reason', 'desconocido')}")
+                    reason = train_result.get('reason', 'desconocido')
+                    print(f"   ❌ Error en entrenamiento: {reason}")
+                    logger.error(f"Training failed: {reason}")
             except Exception as e:
                 print(f"   ❌ Error iniciando entrenamiento: {str(e)}")
-                logger.error(f"Error starting immediate training: {str(e)}")
+                log_exception(logger, e, "Error starting immediate training")
         
         # Start the bot
+        logger.debug("Calling bot.start() method")
         bot.start()
         
-        logger.info(f"Bot successfully started and monitoring: {', '.join(config.symbols)}")
+        logger.success(f"Bot successfully started and monitoring: {', '.join(config.symbols)}")
         print(f"   ✅ Monitoreando: {', '.join(config.symbols)}")
+        logger.debug(f"Stop Loss: {config.stop_loss_percent}%")
+        logger.debug(f"Take Profit: {config.take_profit_percent}%")
+        logger.debug(f"Risk per trade: {config.max_capital_risk_percent}%")
+        
         print(f"   ✅ Stop Loss: {config.stop_loss_percent}%")
         print(f"   ✅ Take Profit: {config.take_profit_percent}%")
         print(f"   ✅ Riesgo por operación: {config.max_capital_risk_percent}%")
@@ -524,7 +636,9 @@ def main():
             logger.info("Bot ha sido detenido correctamente")
     
     except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
+        log_exception(logger, e, "Fatal error in main process")
+        print(f"\n❌ Error fatal: {str(e)}")
+        print("\nConsulta los logs para más detalles. Activa el modo debug con MIDAS_DEBUG=1 para información detallada.")
 
 if __name__ == "__main__":
     main()

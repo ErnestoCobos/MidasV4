@@ -128,7 +128,9 @@ class SQLiteManager(DatabaseManager):
                 exit_reason TEXT,
                 status TEXT DEFAULT 'open',
                 is_simulation INTEGER DEFAULT 0,
-                order_id TEXT
+                order_id TEXT,
+                stop_loss REAL,
+                take_profit REAL
             )
             ''')
             
@@ -147,6 +149,24 @@ class SQLiteManager(DatabaseManager):
             CREATE INDEX IF NOT EXISTS idx_trades_is_simulation 
             ON trades (is_simulation)
             ''')
+            
+            # Verificar y añadir columnas stop_loss y take_profit si no existen
+            # Nota: SQLite no tiene ADD COLUMN IF NOT EXISTS, así que debemos verificar primero
+            try:
+                # Verificar si la columna stop_loss existe
+                cursor.execute("SELECT stop_loss FROM trades LIMIT 1")
+            except sqlite3.OperationalError:
+                # La columna no existe, añadirla
+                self.logger.info("Agregando columna stop_loss a la tabla trades")
+                cursor.execute("ALTER TABLE trades ADD COLUMN stop_loss REAL")
+            
+            try:
+                # Verificar si la columna take_profit existe
+                cursor.execute("SELECT take_profit FROM trades LIMIT 1")
+            except sqlite3.OperationalError:
+                # La columna no existe, añadirla
+                self.logger.info("Agregando columna take_profit a la tabla trades")
+                cursor.execute("ALTER TABLE trades ADD COLUMN take_profit REAL")
             
             # Tabla models
             cursor.execute('''
@@ -279,12 +299,24 @@ class SQLiteManager(DatabaseManager):
             # Determinar si es una operación simulada
             is_simulation = trade_data.get('is_simulation', 0)
             
+            # Para operaciones nuevas, establecer valores predeterminados de stop_loss y take_profit si no están presentes
+            side = trade_data['side']
+            entry_price = trade_data['entry_price']
+            
+            # Valores predeterminados según la dirección del trade
+            default_stop_loss = entry_price * 0.99 if side == 'BUY' else entry_price * 1.01
+            default_take_profit = entry_price * 1.01 if side == 'BUY' else entry_price * 0.99
+            
+            # Utilizar valores proporcionados o predeterminados
+            stop_loss = trade_data.get('stop_loss', default_stop_loss)
+            take_profit = trade_data.get('take_profit', default_take_profit)
+            
             query = '''
             INSERT INTO trades 
             (symbol, entry_time, exit_time, side, entry_price, exit_price, 
              quantity, profit_loss, strategy_type, confidence, model_used, 
-             exit_reason, status, is_simulation, order_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             exit_reason, status, is_simulation, order_id, stop_loss, take_profit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
             
             cursor.execute(query, (
@@ -293,7 +325,8 @@ class SQLiteManager(DatabaseManager):
                 trade_data['quantity'], trade_data.get('profit_loss'),
                 trade_data.get('strategy_type', 'unknown'), trade_data.get('confidence'),
                 trade_data.get('model_used'), trade_data.get('exit_reason'),
-                trade_data.get('status', 'open'), is_simulation, trade_data.get('order_id')
+                trade_data.get('status', 'open'), is_simulation, trade_data.get('order_id'),
+                stop_loss, take_profit
             ))
             
             self.conn.commit()
@@ -461,6 +494,25 @@ class SQLiteManager(DatabaseManager):
             
         cursor = self.conn.cursor()
         try:
+            # Si stop_loss o take_profit están en los datos de actualización pero son None,
+            # calculamos valores predeterminados basados en la información actual del trade
+            if ('stop_loss' in update_data and update_data['stop_loss'] is None) or \
+               ('take_profit' in update_data and update_data['take_profit'] is None):
+                # Obtener información del trade actual para calcular valores predeterminados
+                cursor.execute("SELECT side, entry_price FROM trades WHERE id = ?", (trade_id,))
+                current_trade = cursor.fetchone()
+                
+                if current_trade:
+                    side = current_trade['side']
+                    entry_price = current_trade['entry_price']
+                    
+                    # Valores predeterminados según la dirección del trade
+                    if 'stop_loss' in update_data and update_data['stop_loss'] is None:
+                        update_data['stop_loss'] = entry_price * 0.99 if side == 'BUY' else entry_price * 1.01
+                    
+                    if 'take_profit' in update_data and update_data['take_profit'] is None:
+                        update_data['take_profit'] = entry_price * 1.01 if side == 'BUY' else entry_price * 0.99
+                    
             # Construir la consulta dinámicamente basada en los campos proporcionados
             fields = []
             values = []

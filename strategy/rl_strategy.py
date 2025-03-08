@@ -63,78 +63,186 @@ class RLStrategy:
             self.regime_detector = None
             self.current_regime = None
     
-    def preprocess_state(self, symbol: str, features: Dict[str, Any]) -> np.ndarray:
+    def preprocess_state(self, symbol: str, features: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Preprocess raw features into state representation for RL model
+        Preprocess raw features into multi-modal state representation for DeepScalper model
         
         Args:
             symbol: Trading symbol
             features: Dictionary of features and indicators
             
         Returns:
-            Numpy array representation of state
+            Tuple of (micro_state, macro_state, private_state) arrays
         """
         # Initialize state buffer if needed
         if symbol not in self.state_buffer:
-            self.state_buffer[symbol] = []
-            self.logger.debug(f"Initialized state buffer for {symbol}")
+            self.state_buffer[symbol] = {
+                'micro': [],
+                'macro': [],
+                'private': []
+            }
+            self.logger.debug(f"Initialized multi-modal state buffer for {symbol}")
         
-        # Extract relevant features in a consistent order
-        feature_list = []
+        # --- MICRO FEATURES (high-frequency data) ---
+        micro_features = []
         
-        # Technical indicators
-        for feature in [
+        # Price information - these are the most high-frequency features
+        for key in ['open', 'high', 'low', 'close', 'price']:
+            if key in features:
+                micro_features.append(features[key])
+            else:
+                micro_features.append(0)
+                
+        # Candle shapes
+        for key in ['body_size', 'upper_shadow', 'lower_shadow']:
+            if key in features:
+                micro_features.append(features[key])
+            else:
+                micro_features.append(0)
+        
+        # Volume data
+        for key in ['volume', 'current_volume', 'relative_volume']:
+            if key in features:
+                micro_features.append(features[key])
+            else:
+                micro_features.append(0)
+                
+        # Short-term indicators
+        for key in ['ma_dist_7', 'ma_dist_14', 'ma_dist_25']:
+            if key in features:
+                micro_features.append(features[key])
+            else:
+                micro_features.append(0)
+                
+        # Fill remaining micro features with zeros
+        micro_dim = getattr(self.config, 'micro_dim', 20)
+        while len(micro_features) < micro_dim:
+            micro_features.append(0)
+            
+        # Truncate if too many
+        if len(micro_features) > micro_dim:
+            micro_features = micro_features[:micro_dim]
+            
+        # --- MACRO FEATURES (technical indicators) ---
+        macro_features = []
+        
+        # Various technical indicators
+        indicator_keys = [
             'sma_7', 'sma_25',
             'bb_upper', 'bb_lower', 'bb_middle',
             'rsi', 'rsi_14',
             'volatility_14',
             'adx', 'cci',
             'macd', 'macd_signal', 'macd_hist',
-            'volume_sma', 'current_volume', 'relative_volume',
-            'obv', 'ma_dist_7', 'ma_dist_25',
-            'return_7', 'return_14', 'return_25',
-            'body_size', 'upper_shadow', 'lower_shadow'
-        ]:
-            # Use 0 as default if feature not available
-            if feature in features:
-                feature_list.append(features[feature])
-            elif feature == 'rsi' and 'rsi_14' in features:
-                feature_list.append(features['rsi_14'])
-            elif feature == 'rsi_14' and 'rsi' in features:
-                feature_list.append(features['rsi'])
-            else:
-                feature_list.append(0)
+            'obv',
+            'return_7', 'return_14', 'return_25'
+        ]
         
-        # Add price and volume data
-        for key in ['open', 'high', 'low', 'close', 'volume']:
+        for key in indicator_keys:
             if key in features:
-                feature_list.append(features[key])
+                macro_features.append(features[key])
+            elif key == 'rsi' and 'rsi_14' in features:
+                macro_features.append(features['rsi_14'])
+            elif key == 'rsi_14' and 'rsi' in features:
+                macro_features.append(features['rsi'])
             else:
-                feature_list.append(0)
+                macro_features.append(0)
                 
-        # Normalize all features to be between 0 and 1
-        feature_array = np.array(feature_list)
+        # Fill remaining macro features with zeros
+        macro_dim = getattr(self.config, 'macro_dim', 11)
+        while len(macro_features) < macro_dim:
+            macro_features.append(0)
+            
+        # Truncate if too many
+        if len(macro_features) > macro_dim:
+            macro_features = macro_features[:macro_dim]
+            
+        # --- PRIVATE FEATURES (position, capital, time) ---
+        private_features = []
         
-        # Add to state buffer
-        self.state_buffer[symbol].append(feature_array)
+        # Current position size (normalized)
+        current_position = 0
+        if 'current_position' in features:
+            current_position = features['current_position']
+        elif hasattr(self, 'risk_manager') and symbol in self.risk_manager.open_positions:
+            position = self.risk_manager.open_positions[symbol]
+            if position['side'] == 'BUY':
+                current_position = position['quantity']
+            elif position['side'] == 'SELL':
+                current_position = -position['quantity']
+        private_features.append(current_position)
         
-        # Keep only the last sequence_length states
-        sequence_length = self.model.sequence_length
-        if len(self.state_buffer[symbol]) > sequence_length:
-            self.state_buffer[symbol] = self.state_buffer[symbol][-sequence_length:]
+        # Available capital (normalized)
+        available_capital = 1.0  # Default to full capital
+        if 'available_capital' in features:
+            available_capital = features['available_capital']
+        elif hasattr(self, 'binance_client') and self.binance_client:
+            try:
+                # Try to get from client
+                if hasattr(self.binance_client, 'get_account_balance'):
+                    account_balance = self.binance_client.get_account_balance()
+                    quote_asset = symbol[3:]  # e.g., 'USDT' from 'BTCUSDT'
+                    if quote_asset in account_balance:
+                        available_capital = account_balance[quote_asset] / 10000  # Normalize
+            except Exception as e:
+                pass
+        private_features.append(available_capital)
         
-        # If we don't have enough states yet, pad with zeros
-        if len(self.state_buffer[symbol]) < sequence_length:
-            # Pad with zeros at the beginning
-            padding = [np.zeros_like(feature_array) for _ in range(sequence_length - len(self.state_buffer[symbol]))]
-            padded_state = padding + self.state_buffer[symbol]
+        # Time features (hour of day normalized)
+        time_feature = 0.5  # Default mid-day
+        if 'hour' in features:
+            time_feature = features['hour'] / 24.0
+        private_features.append(time_feature)
+        
+        # Ensure private features have correct dimension
+        private_dim = getattr(self.config, 'private_dim', 3)
+        while len(private_features) < private_dim:
+            private_features.append(0)
+            
+        # Truncate if too many
+        if len(private_features) > private_dim:
+            private_features = private_features[:private_dim]
+            
+        # --- STORE FEATURE ARRAYS ---
+        micro_array = np.array(micro_features)
+        macro_array = np.array(macro_features)
+        private_array = np.array(private_features)
+        
+        # Add to state buffers
+        self.state_buffer[symbol]['micro'].append(micro_array)
+        self.state_buffer[symbol]['macro'].append(macro_array)
+        
+        # Manage buffer sizes
+        micro_seq_len = getattr(self.config, 'micro_seq_len', 30)
+        macro_seq_len = getattr(self.config, 'macro_seq_len', 30)
+        
+        # Trim to sequence length
+        if len(self.state_buffer[symbol]['micro']) > micro_seq_len:
+            self.state_buffer[symbol]['micro'] = self.state_buffer[symbol]['micro'][-micro_seq_len:]
+        if len(self.state_buffer[symbol]['macro']) > macro_seq_len:
+            self.state_buffer[symbol]['macro'] = self.state_buffer[symbol]['macro'][-macro_seq_len:]
+        
+        # --- CREATE PADDED SEQUENCES ---
+        # Pad micro sequence if needed
+        if len(self.state_buffer[symbol]['micro']) < micro_seq_len:
+            padding = [np.zeros_like(micro_array) for _ in range(micro_seq_len - len(self.state_buffer[symbol]['micro']))]
+            micro_padded = padding + self.state_buffer[symbol]['micro']
         else:
-            padded_state = self.state_buffer[symbol]
+            micro_padded = self.state_buffer[symbol]['micro']
+            
+        # Pad macro sequence if needed
+        if len(self.state_buffer[symbol]['macro']) < macro_seq_len:
+            padding = [np.zeros_like(macro_array) for _ in range(macro_seq_len - len(self.state_buffer[symbol]['macro']))]
+            macro_padded = padding + self.state_buffer[symbol]['macro']
+        else:
+            macro_padded = self.state_buffer[symbol]['macro']
+            
+        # Convert to numpy arrays with shape (sequence_length, feature_count)
+        micro_state = np.array(micro_padded)
+        macro_state = np.array(macro_padded)
+        private_state = private_array
         
-        # Convert to numpy array with shape (sequence_length, feature_count)
-        state = np.array(padded_state)
-        
-        return state
+        return micro_state, macro_state, private_state
     
     def _map_action_to_signal(self, action: Tuple[int, int], current_price: float) -> Dict[str, Any]:
         """
@@ -225,7 +333,12 @@ class RLStrategy:
             current_price = features.get('close', features.get('price', 0))
             
             # If we don't have enough state history, use traditional strategy
-            if len(self.state_buffer[symbol]) < self.model.sequence_length:
+            if symbol not in self.state_buffer or (
+                isinstance(self.state_buffer[symbol], dict) and (
+                len(self.state_buffer[symbol]['micro']) < getattr(self.config, 'micro_seq_len', 30) or
+                len(self.state_buffer[symbol]['macro']) < getattr(self.config, 'macro_seq_len', 30)
+                )
+            ):
                 self.logger.info(f"Not enough state history for {symbol}, using indicator-based signal")
                 # Fall back to indicator-based signal
                 return self._generate_indicator_signal(symbol, features)

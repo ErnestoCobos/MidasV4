@@ -138,6 +138,18 @@ DeepScalper implementa características de robustez:
 - **Preservación del estado**: El buffer de experiencias se guarda junto con los pesos
 - **Recuperación automática**: Capacidad de continuar entrenamiento interrumpido
 
+## Entorno de Ejecución Recomendado
+
+El sistema ha sido probado y optimizado para ejecutarse en el siguiente entorno:
+
+- **CPU**: Intel Core i9-9980XE @ 3.00GHz
+- **GPU**: NVIDIA Tesla T4 (16GB VRAM)
+- **RAM**: 256GB DDR4
+- **Sistema Operativo**: Ubuntu 24.04 LTS
+- **Python**: 3.11+
+- **TensorFlow**: 2.12+ con soporte GPU
+- **XGBoost**: 1.7+ con soporte GPU
+
 ## Parámetros de Configuración Avanzados
 
 Consulte `rl_config.json` para ver la configuración completa. Algunos parámetros clave:
