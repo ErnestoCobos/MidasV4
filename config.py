@@ -26,6 +26,9 @@ class Config:
     take_profit_percent: float = 1.0  # Default take profit percentage
     min_profit_threshold: float = 0.2  # Minimum profit % to enter a trade
     trailing_stop_pct: float = 0.3  # Trailing stop percentage
+    cooling_period_seconds: int = 60  # Minimum seconds between trades for same symbol
+    max_daily_trades: int = 30  # Maximum trades per day per symbol
+    max_daily_loss_pct: float = 3.0  # Maximum daily loss as percentage of capital
     
     # Strategy parameters
     timeframe: str = "1m"  # Default timeframe for analysis
@@ -40,11 +43,25 @@ class Config:
     xgb_rounds: int = 100  # Boosting rounds for XGBoost
     lstm_epochs: int = 50  # Number of epochs for LSTM training
     lstm_batch_size: int = 32  # Batch size for LSTM training
+    min_trade_quantity: float = 0.001  # Minimum trade quantity for each asset
     
     # Hardware acceleration (disabled for Vultr inference)
     use_gpu: bool = False  # Using Vultr inference API instead of local GPU
     gpu_device: int = 0  # Not used with Vultr
     gpu_id: int = 0  # Not used with Vultr
+    
+    # DeepScalper specific parameters (multi-modal reinforcement learning)
+    micro_dim: int = 20      # Features dimension for micro-scale data (LOB, high-freq)
+    macro_dim: int = 11      # Features dimension for macro-scale data (indicators)
+    private_dim: int = 3     # Features dimension for private state (position, capital, time)
+    micro_seq_len: int = 30  # Sequence length for micro data
+    macro_seq_len: int = 30  # Sequence length for macro data
+    action_branches: int = 2  # Number of action branches (direction, size)
+    branch_sizes: List[int] = None  # Size of each action branch
+    predict_volatility: bool = True  # Whether to predict volatility
+    volatility_weight: float = 0.5  # Weight for volatility prediction loss
+    h_bonus: int = 10        # Horizon for hindsight bonus
+    lambda_bonus: float = 0.3  # Coefficient for hindsight bonus
     
     # Automatic training
     auto_train: bool = True  # Whether to automatically train models
@@ -65,6 +82,9 @@ class Config:
         
         if self.base_order_size is None:
             self.base_order_size = {"BTCUSDT": 0.001, "ETHUSDT": 0.01}
+            
+        if self.branch_sizes is None:
+            self.branch_sizes = [3, 5]  # [direction (buy/sell/hold), size (5 levels)]
     
     def validate(self) -> bool:
         """Validate that required configuration is present"""
@@ -145,4 +165,5 @@ class Config:
             ai_optimization_interval_hours=ai_optimization_interval_hours,
             ai_optimization_model=ai_optimization_model,
             ai_min_trades_for_optimization=ai_min_trades_for_optimization,
+            min_trade_quantity=float(os.environ.get("MIN_TRADE_QUANTITY", "0.00001")),
         )

@@ -38,8 +38,16 @@ class ModelFactory:
             
         elif model_type.lower() == 'deepscalper' or model_type.lower() == 'rl':
             logger.info("Creating reinforcement learning model")
-            from models.deep_scalper import RLTradingModel
-            return RLTradingModel(config)
+            try:
+                # Try to use advanced DeepScalper model first
+                from models.deep_scalper_model import DeepScalperModel
+                logger.info("Using advanced DeepScalper model with multimodal architecture")
+                return DeepScalperModel(config)
+            except ImportError:
+                # Fall back to basic RLTradingModel
+                from models.deep_scalper import RLTradingModel
+                logger.info("Falling back to basic RLTradingModel")
+                return RLTradingModel(config)
         
         elif model_type.lower() == 'ensemble':
             # For ensemble, we could create multiple models and combine them
